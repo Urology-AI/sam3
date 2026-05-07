@@ -98,17 +98,19 @@ python3 train_sam2_decoder.py --epochs 30 --batch_size 4
 
 Benchmarked on a single NVIDIA H100 80GB:
 
-| Configuration | FPS |
+| Configuration | Throughput |
 |---|---|
 | Baseline (SAM2-large) | ~16 fps |
 | + `torch.compile` `mode="default"` | ~22 fps |
-| + FRAME_STEP=3 (every 3rd frame) | see `benchmark_sam2large.py` |
+| + FRAME_STEP=3 + batch pre-encoding | **1.18× real-time** (19.06s for 22.5s @ 59.9 fps) |
 | Meta upstream target (FA3 + max-autotune) | 32 fps |
 
-**Key bottleneck:** SAM2 maskmem is autoregressive — hard sequential dependency.
-GPU is latency-bound, not memory-bound. Highest-leverage remaining speedup: batch
-pre-encode all chunk frames through the ViT before `propagate_in_video` (zero temporal
-dependency — can be fully parallelised).
+Batch pre-encoding (`pre_encode_chunk` in `detect_segment_fast.py`) removes the ViT encoder
+from the propagation critical path. All chunk frames are encoded in batches of 8 before
+`propagate_in_video` starts — the maskmem loop hits the cache on every frame and never calls
+`forward_image`. Masks verified correct.
+
+**Remaining speedups:** `max-autotune`, Flash Attention 3 + FP8, multi-video parallelism.
 
 ---
 

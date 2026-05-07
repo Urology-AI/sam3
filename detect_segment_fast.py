@@ -55,6 +55,8 @@ SAM2_IMG_SIZE     = 1024
 REINIT_INTERVAL   = 150    # frames between detector reinits (~2.5 s at 60 fps)
 FRAME_STEP        = 3      # propagate every Nth frame; hold last mask for skipped frames
 WARMUP_CHUNKS     = 1      # first N chunks trigger torch.compile JIT; not counted in timing
+MAX_CHUNKS        = 10     # limit to first N chunks for benchmarking (None = all)
+ENCODE_BATCH_SIZE = 8      # frames per ViT forward pass during pre-encoding
 MASK_ALPHA        = 0.35
 MASK_COLOR_BGR    = (0, 255, 0)
 BOX_COLOR_BGR     = (0, 0, 255)
@@ -190,6 +192,37 @@ def decoder_box_to_mask(still_model, frame_bgr, box_abs, device):
     return (mask_full[0, 0] > 0.0).cpu().numpy()
 
 
+# ── Batch pre-encoding ────────────────────────────────────────────────────────
+
+def pre_encode_chunk(predictor, state, loader, device, batch_size=ENCODE_BATCH_SIZE):
+    """Pre-populate inference_state["cached_features"] for every frame in the chunk.
+
+    The ViT image encoder has zero temporal dependency — all frames in a chunk can be
+    encoded in one batched pass. Once the cache is fully populated, propagate_in_video
+    always hits the cache and forward_image never runs during propagation, removing the
+    encoder entirely from the sequential critical path.
+
+    Must be called after state["images"] = loader and before add_new_mask / propagate.
+    Must be called inside torch.inference_mode() + torch.autocast("cuda", bfloat16).
+    """
+    n = len(loader)
+    for batch_start in range(0, n, batch_size):
+        batch_end = min(batch_start + batch_size, n)
+        frames = [loader[i].to(device).float() for i in range(batch_start, batch_end)]
+        batch_tensor = torch.stack(frames, dim=0)          # (B, C, H, W) float32
+        backbone_batch = predictor.forward_image(batch_tensor)
+        # Un-batch: slice each frame's features, clone to release the batch tensor
+        for j, frame_idx in enumerate(range(batch_start, batch_end)):
+            state["cached_features"][frame_idx] = (
+                batch_tensor[j:j+1].clone(),
+                {
+                    "backbone_fpn":   [f[j:j+1].clone() for f in backbone_batch["backbone_fpn"]],
+                    "vision_pos_enc": [p[j:j+1].clone() for p in backbone_batch["vision_pos_enc"]],
+                },
+            )
+        del batch_tensor, backbone_batch
+
+
 # ── Streaming loader with step support ────────────────────────────────────────
 
 class VideoChunkLoader:
@@ -263,8 +296,11 @@ def main():
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
     chunk_starts = list(range(0, n_frames, REINIT_INTERVAL))
+    if MAX_CHUNKS is not None:
+        chunk_starts = chunk_starts[:MAX_CHUNKS]
     box_dur      = max(1, round(fps))
-    print(f"\n[1] {n_frames} frames @ {fps:.1f} fps  →  {len(chunk_starts)} chunks")
+    print(f"\n[1] {n_frames} frames @ {fps:.1f} fps  →  {len(chunk_starts)} chunks"
+          + (f"  (capped at {MAX_CHUNKS})" if MAX_CHUNKS else ""))
 
     # ── [2] Load SAM3 detector ────────────────────────────────────────────
     print("\n[2] Loading SAM3 fine-tuned detector...")
@@ -342,8 +378,18 @@ def main():
         state["video_height"] = h_vid
         state["video_width"]  = w_vid
 
-        # Seed with fine-tuned mask, propagate every FRAME_STEP frames
+        # Pre-encode + seed + propagate
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+            # Batch-encode all chunk frames through the ViT before propagation.
+            # The encoder has no temporal dependency so this fully parallelises it;
+            # propagate_in_video will hit the cache on every frame and skip forward_image.
+            t_enc = time.perf_counter()
+            pre_encode_chunk(predictor, state, loader, device)
+            if not is_warmup:
+                torch.cuda.synchronize()
+                print(f"    pre-encode {len(loader)} frames in "
+                      f"{time.perf_counter()-t_enc:.2f}s", flush=True)
+
             predictor.add_new_mask(
                 inference_state=state,
                 frame_idx=0,

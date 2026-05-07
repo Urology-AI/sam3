@@ -206,15 +206,24 @@ This is a **single-entry dict** — it replaces itself on every new frame. The c
 an LRU cache for more frames in the future)."*
 During `propagate_in_video` every frame is a cache miss and the encoder runs one at a time.
 
-**Next speedup — pre-encode the chunk in batches:**
-The ViT image encoder has **zero temporal dependency** — all frames in a chunk can be encoded
-in parallel. Before calling `propagate_in_video`, batch all chunk frames (e.g. batch=8) through
-`predictor.forward_image`, and pre-populate `state["cached_features"]` with all results.
-`_get_image_feature` will then always hit the cache and the encoder never runs during propagation.
+**Batch pre-encoding — implemented and benchmarked:**
+Pre-populate `inference_state["cached_features"]` for all chunk frames before calling
+`propagate_in_video`. The ViT has zero temporal dependency so frames are encoded in batches
+of 8 via `predictor.forward_image`; propagation then hits the cache on every frame and
+`forward_image` never runs during the sequential maskmem loop.
+Implemented in `detect_segment_fast.py` via `pre_encode_chunk()`.
 
-Memory cost: 50 frames (150-frame chunk at step=3) of FPN features ≈ 500 MB–1 GB — fine on H100.
+**Benchmark result (H100, 59.9 fps source video):**
+| Configuration | Throughput |
+|---|---|
+| Baseline (SAM2-large) | ~16 fps |
+| + `torch.compile` `mode="default"` | ~22 fps |
+| + FRAME_STEP=3 | ~22 fps (quality trade-off benchmark) |
+| + batch pre-encoding (ENCODE_BATCH_SIZE=8) | **1.18× real-time** (19.06s for 22.5s video) |
 
-**SAM 3.1 speed improvements (from `sam3/perflib/`):**
+Masks verified correct. Source: 5395 frames @ 59.9 fps, 10 chunks, REINIT=150, FRAME_STEP=3.
+
+**SAM 3.1 speed improvements (from `sam3/perflib/`) — not yet applied:**
 | Improvement | File | Notes |
 |---|---|---|
 | Flash Attention 3 + FP8 | `perflib/fa3.py` | Q/K/V cast to `float8_e4m3fn`, FA3 kernel, output back to bf16 |
@@ -224,8 +233,8 @@ Memory cost: 50 frames (150-frame chunk at step=3) of FPN features ≈ 500 MB–
 | `compile_wrapper` pattern | `perflib/compile.py` | `.contiguous()` on inputs + `.clone()` on outputs enables `fullgraph=True` |
 
 **What we have vs what remains:**
-- Applied: `mode="default"` compile (partial), frame-skipping FRAME_STEP=3, chunked reinit
-- Remaining: pre-encode batching, `max-autotune`, FA3+FP8, multi-video parallelism
+- Applied: `mode="default"` compile, FRAME_STEP=3, chunked reinit, batch pre-encoding → **1.18× real-time**
+- Remaining: `max-autotune`, FA3+FP8, multi-video parallelism
 
 ---
 

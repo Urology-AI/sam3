@@ -143,6 +143,7 @@ sam3_logs/
 logs/
 runs/
 tensorboard/
+mlruns/
 
 # OS specific
 .DS_Store
@@ -151,3 +152,21 @@ Thumbs.db
 # BPE vocabulary files
 *.bpe
 *.vocab
+
+# Video and image outputs
+*.mp4
+*.avi
+*.mov
+short_clips/
+zero_shot_detections/
+
+# Archives
+*.zip
+*.tar.gz
+*.tar
+
+# Jupyter notebooks (can contain large embedded outputs)
+*.ipynb
+
+# Experiment outputs (large binary outputs, not source)
+experiments/

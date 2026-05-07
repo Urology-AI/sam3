@@ -1,0 +1,2388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>SAM3 Annotation Tool</title>
+<style>
+  :root {
+    --bg: #0e1117;
+    --surface: #161b22;
+    --surface2: #1c2129;
+    --border: #2d333b;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent-hover: #79c0ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --orange: #d29922;
+    --mask-color: rgba(88, 166, 255, 0.35);
+    --box-color: #3fb950;
+    --box-candidate: #d29922;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 13px;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Top bar ── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .topbar .logo {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--accent);
+  }
+  .topbar .sep { color: var(--border); }
+  .topbar .experiment-name {
+    color: var(--green);
+    font-weight: 600;
+  }
+  .topbar .status {
+    margin-left: auto;
+    display: flex;
+    gap: 16px;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+  .topbar .status .dot {
+    display: inline-block;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+  .dot-on { background: var(--green); }
+  .dot-off { background: var(--red); }
+
+  /* ── Main layout ── */
+  .main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ── Left panel: Video ── */
+  .panel-left {
+    width: 42%;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border);
+    background: var(--bg);
+  }
+
+  .video-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    position: relative;
+    overflow: hidden;
+  }
+  .video-wrap video {
+    max-width: 100%;
+    max-height: 100%;
+  }
+  .video-wrap .no-video {
+    color: var(--text-dim);
+    text-align: center;
+    padding: 20px;
+  }
+
+  .video-controls {
+    padding: 10px 14px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .vc-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  /* ── Center panel: Canvas ── */
+  .panel-center {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    min-width: 0;
+  }
+
+  .canvas-header {
+    padding: 8px 14px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .canvas-area {
+    flex: 1;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background: #0a0a0a;
+  }
+  .canvas-area canvas {
+    max-width: 100%;
+    max-height: 100%;
+    cursor: crosshair;
+  }
+  .canvas-area .no-frame {
+    color: var(--text-dim);
+    text-align: center;
+    padding: 20px;
+  }
+
+  .frame-strip {
+    padding: 8px 14px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    align-items: center;
+    min-height: 72px;
+  }
+  .frame-thumb {
+    width: 80px; height: 54px;
+    border: 2px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    object-fit: cover;
+    flex-shrink: 0;
+    transition: border-color 0.15s;
+  }
+  .frame-thumb:hover { border-color: var(--accent); }
+  .frame-thumb.active { border-color: var(--green); }
+
+  /* ── Right panel: Controls ── */
+  .panel-right {
+    width: 280px;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--border);
+    background: var(--surface);
+    overflow-y: auto;
+  }
+
+  .ctrl-section {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .ctrl-section h3 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+  }
+
+  .ctrl-section label {
+    display: block;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+
+  input[type="text"],
+  input[type="number"],
+  input[type="file"],
+  select {
+    width: 100%;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 13px;
+    margin-bottom: 8px;
+  }
+  input:focus, select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 7px 12px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface2);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.12s;
+    gap: 5px;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn:active { transform: scale(0.97); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .btn-accent {
+    background: var(--accent);
+    color: #000;
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  .btn-accent:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #000; }
+
+  .btn-green {
+    background: var(--green);
+    color: #000;
+    border-color: var(--green);
+    font-weight: 600;
+  }
+  .btn-green:hover { background: #4cd964; border-color: #4cd964; color: #000; }
+
+  .btn-red {
+    background: transparent;
+    color: var(--red);
+    border-color: var(--red);
+  }
+  .btn-red:hover { background: var(--red); color: #000; }
+
+  .btn-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+  }
+  .btn-row .btn { flex: 1; }
+
+  .box-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .box-nav .btn { flex: 0; padding: 5px 10px; }
+  .box-label {
+    flex: 1;
+    text-align: center;
+    font-weight: 600;
+    color: var(--orange);
+  }
+
+  .score-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--surface2);
+    color: var(--orange);
+    border: 1px solid var(--border);
+  }
+
+  .mask-info {
+    margin-top: 8px;
+    padding: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  /* Loading spinner */
+  .spinner {
+    display: none;
+    width: 18px; height: 18px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    margin-left: 8px;
+  }
+  .spinner.active { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Toast */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(80px);
+    padding: 10px 20px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 13px;
+    z-index: 999;
+    opacity: 0;
+    transition: all 0.3s ease;
+    pointer-events: none;
+  }
+  .toast.show {
+    transform: translateX(-50%) translateY(0);
+    opacity: 1;
+  }
+
+  /* Threshold slider */
+  input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent);
+  }
+  .threshold-display {
+    text-align: right;
+    font-size: 12px;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .skip-input {
+    width: 50px !important;
+    display: inline-block !important;
+    margin-bottom: 0 !important;
+  }
+
+  /* File browser items */
+  .fb-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.1s;
+  }
+  .fb-item:hover { background: var(--surface2); }
+  .fb-icon { font-size: 16px; flex-shrink: 0; width: 20px; text-align: center; }
+  .fb-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fb-size { color: var(--text-dim); font-size: 11px; flex-shrink: 0; }
+  .fb-item.dir .fb-name { color: var(--accent); }
+  .fb-item.file .fb-name { color: var(--text); }
+  .fb-item.video .fb-name { color: var(--green); font-weight: 600; }
+
+  /* Tool mode selector */
+  .tool-modes {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .tool-btn {
+    flex: 1;
+    padding: 6px 4px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--text-dim);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.12s;
+    min-width: 44px;
+  }
+  .tool-btn:hover { border-color: var(--accent); color: var(--text); }
+  .tool-btn.active { border-color: var(--accent); background: var(--accent); color: #000; font-weight: 600; }
+
+  /* Point markers on canvas */
+  .point-list-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 0;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .point-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .point-dot.pos { background: var(--green); }
+  .point-dot.neg { background: var(--red); }
+
+  /* Brush / Eraser size slider */
+  .brush-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .brush-controls label { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+
+  /* Expanded frame modal */
+  .expand-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 900;
+    background: rgba(0,0,0,0.85);
+    align-items: center;
+    justify-content: center;
+    cursor: zoom-out;
+  }
+  .expand-modal.show { display: flex; }
+  .expand-modal canvas {
+    max-width: 95vw;
+    max-height: 95vh;
+  }
+
+  /* ── Annotation Viewer Modal ── */
+  .ann-viewer-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 950;
+    background: rgba(0,0,0,0.9);
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .ann-viewer-modal.show { display: flex; }
+  .ann-viewer-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .ann-viewer-header h2 {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 1px;
+  }
+  .ann-viewer-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+  }
+  .ann-viewer-nav {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 20px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .ann-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+  .ann-card-header {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .ann-card-header .ann-id { color: var(--accent); font-weight: 600; font-size: 12px; }
+  .ann-card-header .ann-meta { color: var(--text-dim); font-size: 11px; }
+  .ann-card-images {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--border);
+  }
+  .ann-img-cell {
+    background: #0a0a0a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .ann-img-cell .cell-label {
+    padding: 5px 8px;
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    background: var(--surface2);
+    width: 100%;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+  }
+  .ann-img-cell canvas, .ann-img-cell img {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .ann-viewer-spinner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    color: var(--text-dim);
+    gap: 10px;
+  }
+
+  /* Experiment section collapsible */
+  .exp-dropdown-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .exp-dropdown-row select { margin-bottom: 0; flex: 1; }
+
+  /* Annotation list collapsible */
+  .collapsible-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    transition: background 0.1s;
+  }
+  .collapsible-header:hover { background: var(--surface2); }
+  .collapsible-header h3 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    flex: 1;
+    margin: 0;
+  }
+  .collapsible-arrow {
+    color: var(--text-dim);
+    font-size: 10px;
+    transition: transform 0.2s;
+    display: inline-block;
+  }
+  .collapsible-arrow.open { transform: rotate(90deg); }
+  .collapsible-body {
+    display: none;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .collapsible-body.open { display: block; }
+
+  .annotation-item {
+    padding: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+  .annotation-item .ann-label {
+    color: var(--green);
+    font-weight: 600;
+  }
+
+  .brush-color-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .brush-color-row label { font-size: 11px; color: var(--text-dim); }
+  .brush-color-row input[type="color"] {
+    width: 32px; height: 24px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: none;
+    cursor: pointer;
+    margin-bottom: 0;
+  }
+
+  /* ── Categories ── */
+  .category-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-bottom: 8px;
+  }
+  .category-chip {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color 0.1s;
+    user-select: none;
+  }
+  .category-chip:hover { border-color: var(--accent); }
+  .category-chip.selected { border-color: var(--accent); background: var(--surface2); }
+  .cat-swatch {
+    width: 12px; height: 12px;
+    border-radius: 2px;
+    flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.15);
+  }
+  .cat-name { flex: 1; color: var(--text); }
+  .cat-del {
+    color: var(--text-dim);
+    font-size: 10px;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 2px;
+    line-height: 1;
+  }
+  .cat-del:hover { color: var(--red); background: rgba(248,81,73,0.1); }
+  .cat-add-row {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+  }
+  .cat-add-row input[type="text"] {
+    flex: 1;
+    margin-bottom: 0;
+    padding: 5px 7px;
+    font-size: 12px;
+  }
+  .cat-add-row input[type="color"] {
+    width: 30px; height: 28px;
+    padding: 1px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg);
+    cursor: pointer;
+    flex-shrink: 0;
+    margin-bottom: 0;
+  }
+  .no-categories {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: center;
+    padding: 6px 0 10px;
+    font-style: italic;
+  }
+
+  /* Category select in Review section */
+  .cat-select-wrap {
+    margin-bottom: 8px;
+  }
+  .cat-select-wrap select {
+    margin-bottom: 0;
+    border-left: 3px solid var(--border);
+    transition: border-color 0.15s;
+  }
+  .cat-select-wrap select.has-cat {
+    border-left-color: var(--accent);
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Toast ── -->
+<div class="toast" id="toast"></div>
+
+<!-- ── Top Bar ── -->
+<div class="topbar">
+  <span class="logo">SAM3 ANNOTATOR</span>
+  <span class="sep">│</span>
+  <span class="experiment-name" id="expName">No experiment</span>
+  <div class="status">
+    <span><span class="dot dot-off" id="dotDino"></span>DINO</span>
+    <span><span class="dot dot-off" id="dotSam3"></span>SAM3</span>
+    <span id="frameCount">0 frames</span>
+    <span id="annotCount">0 saved</span>
+  </div>
+</div>
+
+<!-- ── Main ── -->
+<div class="main">
+
+  <!-- ── Left: Video ── -->
+  <div class="panel-left">
+    <div class="video-wrap">
+      <video id="video" controls></video>
+      <div class="no-video" id="noVideoMsg">Load a video to begin</div>
+    </div>
+    <div class="video-controls">
+      <div class="vc-row">
+        <button class="btn btn-accent" onclick="openFileBrowser()">📂 Browse Videos</button>
+        <span style="color:var(--text-dim); font-size:12px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" id="videoPathDisplay">No video loaded</span>
+        <span style="color:var(--text-dim); font-size:12px" id="timeDisplay">0.00s</span>
+      </div>
+      <div class="vc-row">
+        <button class="btn" onclick="skipVideo(-1)">← Back</button>
+        <button class="btn" onclick="skipVideo(1)">Fwd →</button>
+        <div style="display:flex; gap:4px; align-items:center;">
+          <label style="margin:0; font-size:12px; color:var(--text-dim)">Skip:</label>
+          <input type="number" id="skipSec" value="1" min="0.1" step="0.1" class="skip-input" />
+        </div>
+        <select id="playSpeed" style="width:80px; margin-bottom:0" onchange="setSpeed()">
+          <option value="0.1">0.1x</option>
+          <option value="0.25">0.25x</option>
+          <option value="0.5">0.5x</option>
+          <option value="1" selected>1x</option>
+          <option value="1.5">1.5x</option>
+          <option value="2">2x</option>
+        </select>
+        <button class="btn btn-accent" onclick="captureFrame()">⬡ Capture Frame</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── File Browser Modal ── -->
+  <div id="fileBrowserModal" style="display:none; position:fixed; inset:0; z-index:1000; background:rgba(0,0,0,0.7); align-items:center; justify-content:center;">
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; width:600px; max-height:70vh; display:flex; flex-direction:column; overflow:hidden;">
+      <div style="padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px;">
+        <span style="font-weight:700; color:var(--accent); font-size:13px;">📂 File Browser</span>
+        <span id="browserPath" style="flex:1; font-size:11px; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+        <button class="btn" onclick="closeFileBrowser()" style="padding:3px 8px; font-size:11px;">✕</button>
+      </div>
+      <div id="browserContent" style="flex:1; overflow-y:auto; padding:8px 0;">
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Expanded Frame Modal ── -->
+  <div class="expand-modal" id="expandModal" onclick="collapseFrame()">
+    <canvas id="expandCanvas"></canvas>
+  </div>
+
+  <!-- ── Annotation Viewer Modal ── -->
+  <div class="ann-viewer-modal" id="annViewerModal">
+    <div class="ann-viewer-header">
+      <h2>📊 ANNOTATION VIEWER</h2>
+      <span id="annViewerTitle" style="color:var(--text-dim); font-size:12px;"></span>
+      <div style="margin-left:auto; display:flex; gap:8px; align-items:center;">
+        <span id="annViewerCount" style="color:var(--text-dim); font-size:12px;"></span>
+        <button class="btn" onclick="closeAnnViewer()" style="padding:4px 10px; font-size:12px;">✕ Close</button>
+      </div>
+    </div>
+    <div class="ann-viewer-body" id="annViewerBody">
+      <div class="ann-viewer-spinner" id="annViewerSpinner">
+        <div class="spinner active" style="display:inline-block;"></div>
+        <span>Loading annotations…</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel-center">
+    <div class="canvas-header">
+      <span id="canvasInfo">No frame selected</span>
+      <span style="margin-left:auto; display:flex; gap:8px; align-items:center;">
+        <span id="canvasSize"></span>
+        <button class="btn" onclick="expandFrame()" style="padding:3px 8px; font-size:11px;" title="Expand frame">⤢ Expand</button>
+      </span>
+    </div>
+    <div class="canvas-area" id="canvasArea">
+      <canvas id="mainCanvas"></canvas>
+      <div class="no-frame" id="noFrameMsg">Capture frames from the video, then select one to annotate</div>
+    </div>
+    <div class="frame-strip" id="frameStrip">
+    </div>
+  </div>
+
+  <!-- ── Right: Controls ── -->
+  <div class="panel-right">
+
+    <!-- Experiment -->
+    <div class="ctrl-section">
+      <h3>Experiment</h3>
+      <div class="exp-dropdown-row">
+        <select id="expDropdown" onchange="onExpDropdownChange()">
+          <option value="">— select existing —</option>
+        </select>
+        <button class="btn" onclick="refreshExpList()" title="Refresh list" style="padding:6px 8px; flex:0;">↺</button>
+      </div>
+      <label>Or create new</label>
+      <input type="text" id="expInput" placeholder="e.g. prostate_segmentation" />
+      <button class="btn btn-accent" onclick="createExperiment()" style="width:100%">Create / Load</button>
+    </div>
+
+    <!-- Categories -->
+    <div class="ctrl-section" id="categoriesSection" style="display:none">
+      <h3>Categories</h3>
+      <div class="category-list" id="categoryList"></div>
+      <div class="cat-add-row">
+        <input type="text" id="catNameInput" placeholder="Category name…" onkeydown="if(event.key==='Enter')addCategory()" />
+        <input type="color" id="catColorInput" value="#58a6ff" title="Pick color" />
+        <button class="btn btn-accent" onclick="addCategory()" style="padding:5px 9px; flex:0; white-space:nowrap; font-size:11px;">+ Add</button>
+      </div>
+    </div>
+
+    <!-- DINO -->
+    <div class="ctrl-section">
+      <h3>DINO Detection</h3>
+      <label>Text prompt</label>
+      <input type="text" id="dinoPrompt" placeholder="e.g. tips of the scissors" />
+      <label>Confidence threshold</label>
+      <input type="range" id="dinoThreshold" min="0.05" max="0.95" step="0.05" value="0.3"
+             oninput="document.getElementById('threshVal').textContent=this.value" />
+      <div class="threshold-display" id="threshVal">0.3</div>
+      <div class="btn-row">
+        <button class="btn btn-accent" id="btnRunDino" onclick="runDino()" disabled>Run DINO</button>
+        <span class="spinner" id="spinDino"></span>
+      </div>
+      <div class="box-nav" id="boxNav" style="display:none">
+        <button class="btn" onclick="prevBox()">◀</button>
+        <span class="box-label" id="boxLabel">—</span>
+        <button class="btn" onclick="nextBox()">▶</button>
+      </div>
+      <div id="boxScoreArea" style="margin-top:6px"></div>
+      <div class="btn-row" style="margin-top:6px">
+        <button class="btn btn-green" id="btnSetBox" onclick="setBox()" disabled>Set Box</button>
+      </div>
+    </div>
+
+    <!-- SAM3 -->
+    <div class="ctrl-section">
+      <h3>SAM3 Segmentation</h3>
+      <label>Text prompt (optional)</label>
+      <input type="text" id="sam3Prompt" placeholder="e.g. prostate" />
+
+      <label style="margin-top:6px">Canvas tool</label>
+      <div class="tool-modes">
+        <button class="tool-btn active" id="toolBox" onclick="setToolMode('box')">Box</button>
+        <button class="tool-btn" id="toolPosPoint" onclick="setToolMode('pos_point')">+ Point</button>
+        <button class="tool-btn" id="toolNegPoint" onclick="setToolMode('neg_point')">− Point</button>
+        <button class="tool-btn" id="toolBrush" onclick="setToolMode('brush')">✏ Brush</button>
+        <button class="tool-btn" id="toolEraser" onclick="setToolMode('eraser')">⌫ Erase</button>
+      </div>
+
+      <div id="pointsList" style="max-height:80px; overflow-y:auto;"></div>
+      <div class="btn-row" id="pointsActions" style="display:none">
+        <button class="btn" onclick="clearPoints()">Clear points</button>
+      </div>
+
+      <!-- Brush controls (shown for brush mode) -->
+      <div id="brushControls" style="display:none">
+        <div class="brush-controls">
+          <label>Size:</label>
+          <input type="range" id="brushSize" min="2" max="80" value="12" style="flex:1"
+                 oninput="document.getElementById('brushSizeVal').textContent=this.value+'px'" />
+          <span id="brushSizeVal" style="font-size:11px; color:var(--accent); min-width:35px;">12px</span>
+        </div>
+        <div class="brush-color-row" style="margin-top:6px">
+          <label>Mode:</label>
+          <button class="tool-btn active" id="brushModeAdd" onclick="setBrushMode('add')" style="flex:0; padding:4px 10px; font-size:11px;">Add</button>
+          <button class="tool-btn" id="brushModeSub" onclick="setBrushMode('subtract')" style="flex:0; padding:4px 10px; font-size:11px;">Subtract</button>
+        </div>
+        <div style="margin-top:8px">
+          <button class="btn" onclick="clearBrushMask()" style="width:100%; font-size:11px;">Clear Brush Mask</button>
+        </div>
+      </div>
+
+      <!-- Eraser controls (shown for eraser mode) -->
+      <div id="eraserControls" style="display:none">
+        <div class="brush-controls">
+          <label>Size:</label>
+          <input type="range" id="eraserSize" min="5" max="80" value="20" style="flex:1"
+                 oninput="document.getElementById('eraserSizeVal').textContent=this.value+'px'" />
+          <span id="eraserSizeVal" style="font-size:11px; color:var(--accent); min-width:35px;">20px</span>
+        </div>
+      </div>
+
+      <div class="btn-row" style="margin-top:6px">
+        <button class="btn btn-accent" id="btnRunSam3" onclick="runSam3()" disabled>Run SAM3</button>
+        <span class="spinner" id="spinSam3"></span>
+      </div>
+      <label style="margin-top:8px">Mask opacity</label>
+      <input type="range" id="maskOpacity" min="0" max="1" step="0.05" value="0.4"
+             oninput="document.getElementById('opacityVal').textContent=this.value; renderCanvas()" />
+      <div class="threshold-display" id="opacityVal">0.4</div>
+      <div class="mask-info" id="maskInfo" style="display:none">
+        <div id="maskScoreText"></div>
+      </div>
+    </div>
+
+    <!-- Approve / Reject -->
+    <div class="ctrl-section">
+      <h3>Review</h3>
+      <div class="cat-select-wrap">
+        <label style="margin-bottom:4px;">Category <span style="color:var(--red)">*</span></label>
+        <select id="saveCategorySelect" onchange="onSaveCategoryChange()">
+          <option value="">— choose category —</option>
+        </select>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-green" id="btnApprove" onclick="approveMask()" disabled>✓ Approve</button>
+        <button class="btn btn-red" id="btnReject" onclick="rejectMask()" disabled>✗ Redo</button>
+      </div>
+      <div class="btn-row" style="margin-top:6px">
+        <button class="btn" id="btnSave" onclick="saveAnnotation()" disabled>Save Annotation</button>
+      </div>
+    </div>
+
+    <!-- Saved annotations (collapsible) -->
+    <div class="collapsible-header" onclick="toggleAnnotations()">
+      <h3>Saved Annotations</h3>
+      <span id="annotCountBadge" style="font-size:11px; color:var(--accent); font-weight:600;"></span>
+      <span class="collapsible-arrow" id="annArrow">▶</span>
+    </div>
+    <div class="collapsible-body" id="annCollapsible">
+      <div class="btn-row" style="margin-bottom:10px;">
+        <button class="btn btn-accent" onclick="openAnnViewer()" style="width:100%;">📊 View All Annotations</button>
+      </div>
+      <div id="annotationList"></div>
+    </div>
+
+  </div>
+
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════
+const API = '';
+
+let experiment = null;
+let videoEl = document.getElementById('video');
+let canvas = document.getElementById('mainCanvas');
+let ctx = canvas.getContext('2d');
+
+let frames = [];
+let activeFrameIdx = -1;
+
+let dinoBoxes = [];
+let currentBoxIdx = -1;
+
+let editBox = null;
+let dragging = null;
+let dragStart = { x: 0, y: 0, box: null };
+
+let maskImg = null;
+let maskScore = 0;
+let maskApproved = false;
+let maskB64 = null;
+
+// Tool mode: 'box' | 'pos_point' | 'neg_point' | 'brush' | 'eraser'
+let toolMode = 'box';
+
+// Brush mode: 'add' | 'subtract'
+let brushMode = 'add';
+
+let pointPrompts = [];
+
+// Shared offscreen canvas (used for both SAM3 masks and brush)
+let maskCanvasEl = null;
+let maskCanvasCtx = null;
+let isBrushPainting = false;
+let isErasing = false;
+
+// Canvas scaling
+let imgScale = 1;
+let imgOffX = 0;
+let imgOffY = 0;
+let imgW = 0;
+let imgH = 0;
+
+// Annotations collapse state
+let annCollapsed = true;
+
+// ── Categories ──
+// Array of { id, name, color }  — color is a hex string like '#58a6ff'
+let categories = [];
+let selectedCategoryId = null;  // currently active for mask tinting + save
+
+
+// ═══════════════════════════════════════════
+// Utility
+// ═══════════════════════════════════════════
+function toast(msg, duration = 2500) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), duration);
+}
+
+async function api(path, body) {
+  const opts = body
+    ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+    : { method: 'GET' };
+  const res = await fetch(API + path, opts);
+  if (res.status === 401) {
+    window.location.href = '/login';
+    throw new Error('Session expired');
+  }
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(err);
+  }
+  return res.json();
+}
+
+function ensureMaskCanvas(w, h) {
+  if (!maskCanvasEl) {
+    maskCanvasEl = document.createElement('canvas');
+    maskCanvasEl.width = w || (activeFrameIdx >= 0 ? frames[activeFrameIdx].img.naturalWidth : 512);
+    maskCanvasEl.height = h || (activeFrameIdx >= 0 ? frames[activeFrameIdx].img.naturalHeight : 512);
+    maskCanvasCtx = maskCanvasEl.getContext('2d');
+  }
+  return maskCanvasEl;
+}
+
+function updateMaskB64() {
+  if (maskCanvasEl) {
+    maskB64 = maskCanvasEl.toDataURL('image/png').split(',')[1];
+  }
+}
+
+
+// ═══════════════════════════════════════════
+// Experiment — dropdown + create
+// ═══════════════════════════════════════════
+async function refreshExpList() {
+  try {
+    const data = await api('/api/experiments');
+    const sel = document.getElementById('expDropdown');
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">— select existing —</option>';
+    (data.experiments || []).forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === prev) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  } catch (e) {
+    // silently fail if no experiments yet
+  }
+}
+
+function onExpDropdownChange() {
+  const name = document.getElementById('expDropdown').value;
+  if (name) {
+    document.getElementById('expInput').value = name;
+    loadExperiment(name);
+  }
+}
+
+async function loadExperiment(name) {
+  try {
+    const data = await api('/api/experiments', { name });
+    experiment = data.name;
+    document.getElementById('expName').textContent = experiment;
+    toast('Loaded: ' + experiment);
+    loadAnnotations();
+    await loadCategories();
+  } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+async function createExperiment() {
+  const name = document.getElementById('expInput').value.trim();
+  if (!name) return toast('Enter an experiment name');
+  try {
+    const data = await api('/api/experiments', { name });
+    experiment = data.name;
+    document.getElementById('expName').textContent = experiment;
+    // Sync dropdown
+    await refreshExpList();
+    const sel = document.getElementById('expDropdown');
+    sel.value = experiment;
+    toast('Experiment: ' + experiment);
+    loadAnnotations();
+    await loadCategories();
+  } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+
+// ═══════════════════════════════════════════
+// Categories
+// ═══════════════════════════════════════════
+
+// Fixed palette for auto-assigning colors to new categories
+const CAT_PALETTE = [
+  '#58a6ff', '#3fb950', '#f78166', '#d29922', '#bc8cff',
+  '#ff7b72', '#79c0ff', '#56d364', '#ffa657', '#e3b341',
+];
+
+function hexToRgb(hex) {
+  const r = parseInt(hex.slice(1,3), 16);
+  const g = parseInt(hex.slice(3,5), 16);
+  const b = parseInt(hex.slice(5,7), 16);
+  return [r, g, b];
+}
+
+async function loadCategories() {
+  if (!experiment) return;
+  try {
+    const data = await api(`/api/categories/${experiment}`);
+    categories = data.categories || [];
+  } catch (e) {
+    // No categories file yet — start empty
+    categories = [];
+  }
+  renderCategoryList();
+  renderCategorySelect();
+  document.getElementById('categoriesSection').style.display = 'block';
+}
+
+async function saveCategories() {
+  if (!experiment) return;
+  try {
+    await api(`/api/categories/${experiment}`, { categories });
+  } catch (e) {
+    toast('Could not save categories: ' + e.message);
+  }
+}
+
+function renderCategoryList() {
+  const list = document.getElementById('categoryList');
+  // Clear only chip elements, keep the no-categories message in place
+  list.innerHTML = '';
+
+  if (categories.length === 0) {
+    const msg = document.createElement('div');
+    msg.className = 'no-categories';
+    msg.textContent = 'No categories yet — add one below';
+    list.appendChild(msg);
+    return;
+  }
+
+  categories.forEach(cat => {
+    const chip = document.createElement('div');
+    chip.className = 'category-chip' + (cat.id === selectedCategoryId ? ' selected' : '');
+    chip.dataset.id = cat.id;
+    chip.innerHTML = `
+      <span class="cat-swatch" style="background:${cat.color}"></span>
+      <span class="cat-name">${escHtml(cat.name)}</span>
+      <span class="cat-del" title="Delete category" onclick="deleteCategory('${cat.id}',event)">✕</span>
+    `;
+    chip.addEventListener('click', (e) => {
+      if (e.target.classList.contains('cat-del')) return;
+      selectCategory(cat.id);
+    });
+    list.appendChild(chip);
+  });
+}
+
+function renderCategorySelect() {
+  const sel = document.getElementById('saveCategorySelect');
+  const prev = sel.value;  // save current selection before rebuild
+  sel.innerHTML = '<option value="">— choose category —</option>';
+  categories.forEach(cat => {
+    const opt = document.createElement('option');
+    opt.value = cat.id;
+    opt.textContent = cat.name;
+    sel.appendChild(opt);
+  });
+  // Restore previous selection if it's still in the list
+  const validPrev = prev && categories.find(c => c.id === prev);
+  const validSelected = selectedCategoryId && categories.find(c => c.id === selectedCategoryId);
+  if (validPrev) {
+    sel.value = prev;
+  } else if (validSelected) {
+    sel.value = selectedCategoryId;
+  } else {
+    sel.value = '';
+    selectedCategoryId = null;
+  }
+  onSaveCategoryChange();
+}
+
+function selectCategory(id) {
+  selectedCategoryId = id;
+  // Update sidebar chips
+  document.querySelectorAll('.category-chip').forEach(el => {
+    el.classList.toggle('selected', el.dataset.id === id);
+  });
+  // Sync the save dropdown
+  const sel = document.getElementById('saveCategorySelect');
+  sel.value = id;
+  onSaveCategoryChange();
+  // Re-render canvas so mask tint updates
+  renderCanvas();
+}
+
+function onSaveCategoryChange() {
+  const sel = document.getElementById('saveCategorySelect');
+  selectedCategoryId = sel.value || null;
+  const cat = selectedCategoryId ? categories.find(c => c.id === selectedCategoryId) : null;
+  // Color the left border based on chosen category
+  sel.style.borderLeft = cat ? `3px solid ${cat.color}` : '3px solid #2d333b';
+  sel.classList.toggle('has-cat', !!cat);
+  // Sync sidebar chip selection
+  document.querySelectorAll('.category-chip').forEach(el => {
+    el.classList.toggle('selected', el.dataset.id === (selectedCategoryId || ''));
+  });
+  // Re-render canvas mask tint
+  renderCanvas();
+}
+
+async function addCategory() {
+  const nameEl = document.getElementById('catNameInput');
+  const colorEl = document.getElementById('catColorInput');
+  const name = nameEl.value.trim();
+  if (!name) return toast('Enter a category name');
+  if (categories.find(c => c.name.toLowerCase() === name.toLowerCase())) {
+    return toast('Category already exists');
+  }
+  const color = colorEl.value || CAT_PALETTE[categories.length % CAT_PALETTE.length];
+  const id = 'cat_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  categories.push({ id, name, color });
+  await saveCategories();
+  // Auto-select the newly added category
+  selectedCategoryId = id;
+  renderCategoryList();
+  renderCategorySelect();
+  // Force the select to show the new category
+  const sel = document.getElementById('saveCategorySelect');
+  sel.value = id;
+  onSaveCategoryChange();
+  nameEl.value = '';
+  // Auto-advance color picker to next palette color
+  colorEl.value = CAT_PALETTE[categories.length % CAT_PALETTE.length];
+  toast('Category added: ' + name);
+}
+
+async function deleteCategory(id, e) {
+  e.stopPropagation();
+  const cat = categories.find(c => c.id === id);
+  if (!cat) return;
+  if (!confirm(`Delete category "${cat.name}"? Existing annotations keep their label.`)) return;
+  categories = categories.filter(c => c.id !== id);
+  if (selectedCategoryId === id) selectedCategoryId = null;
+  await saveCategories();
+  renderCategoryList();
+  renderCategorySelect();
+  renderCanvas();
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Helper: return [r,g,b] for the currently selected category (fallback cyan)
+function activeCategoryRgb() {
+  if (selectedCategoryId) {
+    const cat = categories.find(c => c.id === selectedCategoryId);
+    if (cat) return hexToRgb(cat.color);
+  }
+  return [50, 200, 255]; // default cyan
+}
+
+
+// ═══════════════════════════════════════════
+// Video (file browser)
+// ═══════════════════════════════════════════
+let currentVideoName = '';
+let browserCurrentPath = '';
+
+function openFileBrowser() {
+  document.getElementById('fileBrowserModal').style.display = 'flex';
+  browseTo('');
+}
+
+function closeFileBrowser() {
+  document.getElementById('fileBrowserModal').style.display = 'none';
+}
+
+document.getElementById('fileBrowserModal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeFileBrowser();
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    closeFileBrowser();
+    collapseFrame();
+    closeAnnViewer();
+  }
+});
+
+async function browseTo(relPath) {
+  try {
+    const data = await api('/api/browse', { path: relPath });
+    browserCurrentPath = data.current_path;
+    document.getElementById('browserPath').textContent = data.full_path;
+
+    const container = document.getElementById('browserContent');
+    container.innerHTML = '';
+
+    if (!data.is_root) {
+      const parent = document.createElement('div');
+      parent.className = 'fb-item dir';
+      parent.innerHTML = '<span class="fb-icon">⬆</span><span class="fb-name">..</span>';
+      parent.onclick = () => browseTo(data.parent_path);
+      container.appendChild(parent);
+    }
+
+    data.dirs.forEach(d => {
+      const item = document.createElement('div');
+      item.className = 'fb-item dir';
+      item.innerHTML = `<span class="fb-icon">📁</span><span class="fb-name">${d}</span>`;
+      item.onclick = () => {
+        const newPath = browserCurrentPath ? browserCurrentPath + '/' + d : d;
+        browseTo(newPath);
+      };
+      container.appendChild(item);
+    });
+
+    const videoExts = ['.mp4', '.avi', '.mkv', '.mov', '.webm'];
+    data.files.forEach(f => {
+      const isVideo = videoExts.includes(f.type);
+      const item = document.createElement('div');
+      item.className = 'fb-item ' + (isVideo ? 'video' : 'file');
+      item.innerHTML = `
+        <span class="fb-icon">${isVideo ? '🎬' : '📄'}</span>
+        <span class="fb-name">${f.name}</span>
+        <span class="fb-size">${f.size_mb} MB</span>
+      `;
+      if (isVideo) {
+        item.onclick = () => {
+          const fullPath = data.full_path + '/' + f.name;
+          loadVideoFromPath(fullPath, f.name);
+          closeFileBrowser();
+        };
+      }
+      container.appendChild(item);
+    });
+
+    if (data.dirs.length === 0 && data.files.length === 0) {
+      container.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-dim);">Empty directory</div>';
+    }
+  } catch (e) {
+    toast('Browse error: ' + e.message);
+  }
+}
+
+function loadVideoFromPath(fullPath, filename) {
+  currentVideoName = filename;
+  videoEl.src = '/api/video_file?path=' + encodeURIComponent(fullPath);
+  videoEl.load();
+  document.getElementById('noVideoMsg').style.display = 'none';
+  videoEl.style.display = 'block';
+  document.getElementById('videoPathDisplay').textContent = fullPath;
+  toast('Loading: ' + filename);
+}
+
+videoEl.addEventListener('timeupdate', () => {
+  document.getElementById('timeDisplay').textContent = videoEl.currentTime.toFixed(2) + 's';
+});
+
+function skipVideo(dir) {
+  const amt = parseFloat(document.getElementById('skipSec').value) || 1;
+  videoEl.currentTime = Math.max(0, Math.min(videoEl.duration || 9999, videoEl.currentTime + dir * amt));
+}
+
+function setSpeed() {
+  videoEl.playbackRate = parseFloat(document.getElementById('playSpeed').value) || 1;
+}
+
+document.addEventListener('keydown', e => {
+  const tag = e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (e.code === 'Space') { e.preventDefault(); videoEl.paused ? videoEl.play() : videoEl.pause(); }
+  if (e.code === 'ArrowLeft') { e.preventDefault(); skipVideo(-1); }
+  if (e.code === 'ArrowRight') { e.preventDefault(); skipVideo(1); }
+  if (e.code === 'KeyC') { e.preventDefault(); captureFrame(); }
+});
+
+
+// ═══════════════════════════════════════════
+// Frame Capture
+// ═══════════════════════════════════════════
+async function captureFrame() {
+  if (!experiment) return toast('Create an experiment first');
+  if (!videoEl.src || videoEl.readyState < 2) return toast('Load a video first');
+
+  const w = videoEl.videoWidth;
+  const h = videoEl.videoHeight;
+  const offscreen = document.createElement('canvas');
+  offscreen.width = w;
+  offscreen.height = h;
+  const octx = offscreen.getContext('2d');
+  octx.drawImage(videoEl, 0, 0, w, h);
+
+  const dataURL = offscreen.toDataURL('image/png');
+  const b64 = dataURL.split(',')[1];
+
+  try {
+    const data = await api('/api/capture', {
+      experiment: experiment,
+      frame_b64: b64,
+      video_name: currentVideoName || 'unknown',
+      timestamp: videoEl.currentTime,
+    });
+
+    const img = new Image();
+    img.src = dataURL;
+    await new Promise(r => { img.onload = r; });
+
+    const frame = {
+      id: data.frame_id,
+      path: data.frame_path,
+      img: img,
+      thumb: offscreen.toDataURL('image/jpeg', 0.5),
+      timestamp: videoEl.currentTime,
+    };
+    frames.push(frame);
+    addThumb(frames.length - 1);
+    selectFrame(frames.length - 1);
+    updateCounts();
+    toast('Frame captured at ' + videoEl.currentTime.toFixed(2) + 's');
+  } catch (e) {
+    toast('Capture failed: ' + e.message);
+  }
+}
+
+function addThumb(idx) {
+  const strip = document.getElementById('frameStrip');
+  const img = document.createElement('img');
+  img.src = frames[idx].thumb;
+  img.className = 'frame-thumb';
+  img.title = `Frame ${idx + 1} (${frames[idx].timestamp.toFixed(2)}s)`;
+  img.onclick = () => selectFrame(idx);
+  img.dataset.idx = idx;
+  strip.appendChild(img);
+}
+
+function selectFrame(idx) {
+  activeFrameIdx = idx;
+  document.querySelectorAll('.frame-thumb').forEach((el, i) => {
+    el.classList.toggle('active', i === idx);
+  });
+
+  dinoBoxes = [];
+  currentBoxIdx = -1;
+  editBox = null;
+  maskImg = null;
+  maskCanvasEl = null;
+  maskCanvasCtx = null;
+  maskApproved = false;
+  maskB64 = null;
+  pointPrompts = [];
+  isBrushPainting = false;
+  isErasing = false;
+
+  document.getElementById('boxNav').style.display = 'none';
+  document.getElementById('boxScoreArea').innerHTML = '';
+  document.getElementById('maskInfo').style.display = 'none';
+  document.getElementById('pointsList').innerHTML = '';
+  document.getElementById('pointsActions').style.display = 'none';
+
+  document.getElementById('noFrameMsg').style.display = 'none';
+  canvas.style.display = 'block';
+  document.getElementById('btnRunDino').disabled = false;
+  document.getElementById('btnRunSam3').disabled = false;
+  document.getElementById('btnSetBox').disabled = true;
+  document.getElementById('btnApprove').disabled = true;
+  document.getElementById('btnReject').disabled = true;
+  document.getElementById('btnSave').disabled = true;
+
+  renderCanvas();
+  const f = frames[idx];
+  document.getElementById('canvasInfo').textContent = `Frame ${idx + 1} — ${f.timestamp.toFixed(2)}s`;
+  document.getElementById('canvasSize').textContent = `${f.img.naturalWidth}×${f.img.naturalHeight}`;
+}
+
+
+// ═══════════════════════════════════════════
+// Canvas Rendering
+// ═══════════════════════════════════════════
+function renderCanvas() {
+  if (activeFrameIdx < 0) return;
+  const f = frames[activeFrameIdx];
+  const img = f.img;
+  const area = document.getElementById('canvasArea');
+  const aW = area.clientWidth;
+  const aH = area.clientHeight;
+
+  const scale = Math.min(aW / img.naturalWidth, aH / img.naturalHeight, 1);
+  imgW = Math.floor(img.naturalWidth * scale);
+  imgH = Math.floor(img.naturalHeight * scale);
+  imgScale = scale;
+  imgOffX = Math.floor((aW - imgW) / 2);
+  imgOffY = Math.floor((aH - imgH) / 2);
+
+  canvas.width = aW;
+  canvas.height = aH;
+  ctx.clearRect(0, 0, aW, aH);
+  ctx.drawImage(img, imgOffX, imgOffY, imgW, imgH);
+
+  // Draw mask overlay
+  if (maskCanvasEl) {
+    const opacity = parseFloat(document.getElementById('maskOpacity').value) || 0.4;
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width = imgW;
+    tmpCanvas.height = imgH;
+    const tmpCtx = tmpCanvas.getContext('2d');
+    tmpCtx.drawImage(maskCanvasEl, 0, 0, imgW, imgH);
+    const maskData = tmpCtx.getImageData(0, 0, imgW, imgH);
+    const baseData = ctx.getImageData(imgOffX, imgOffY, imgW, imgH);
+    const bd = baseData.data;
+    const md = maskData.data;
+    const [tR, tG, tB] = activeCategoryRgb();
+    for (let i = 0; i < md.length; i += 4) {
+      if (md[i] > 128) {
+        bd[i]     = Math.round(bd[i]     * (1 - opacity) + tR * opacity);
+        bd[i + 1] = Math.round(bd[i + 1] * (1 - opacity) + tG * opacity);
+        bd[i + 2] = Math.round(bd[i + 2] * (1 - opacity) + tB * opacity);
+      }
+    }
+    ctx.putImageData(baseData, imgOffX, imgOffY);
+  }
+
+  // DINO candidate boxes (dimmed)
+  dinoBoxes.forEach((c, i) => {
+    if (i === currentBoxIdx) return;
+    const [x1, y1, x2, y2] = c.box;
+    drawBoxCanvas(x1, y1, x2, y2, 'rgba(210, 153, 34, 0.3)', 1, `box${i + 1}`);
+  });
+
+  // Active/editable box
+  if (editBox) {
+    drawBoxCanvas(editBox.x1, editBox.y1, editBox.x2, editBox.y2, '#3fb950', 2, null);
+    drawHandles(editBox);
+  } else if (currentBoxIdx >= 0 && dinoBoxes[currentBoxIdx]) {
+    const [x1, y1, x2, y2] = dinoBoxes[currentBoxIdx].box;
+    drawBoxCanvas(x1, y1, x2, y2, 'var(--box-candidate)', 2, `box${currentBoxIdx + 1}`);
+  }
+
+  // Point prompts
+  pointPrompts.forEach(pt => {
+    const cx = imgOffX + pt.x * imgScale;
+    const cy = imgOffY + pt.y * imgScale;
+    const isPos = pt.label === 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+    ctx.fillStyle = isPos ? '#3fb950' : '#f85149';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 9px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(isPos ? '+' : '−', cx, cy);
+    ctx.textAlign = 'start';
+    ctx.textBaseline = 'alphabetic';
+  });
+}
+
+function drawBoxCanvas(x1, y1, x2, y2, color, lineWidth, label) {
+  const cx1 = imgOffX + x1 * imgScale;
+  const cy1 = imgOffY + y1 * imgScale;
+  const cx2 = imgOffX + x2 * imgScale;
+  const cy2 = imgOffY + y2 * imgScale;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.strokeRect(cx1, cy1, cx2 - cx1, cy2 - cy1);
+  if (label) {
+    ctx.font = '11px monospace';
+    ctx.fillStyle = color;
+    ctx.fillText(label, cx1 + 3, cy1 - 4);
+  }
+}
+
+function drawHandles(box) {
+  const size = 6;
+  const corners = [
+    { x: box.x1, y: box.y1 },
+    { x: box.x2, y: box.y1 },
+    { x: box.x1, y: box.y2 },
+    { x: box.x2, y: box.y2 },
+  ];
+  ctx.fillStyle = '#3fb950';
+  corners.forEach(c => {
+    const cx = imgOffX + c.x * imgScale;
+    const cy = imgOffY + c.y * imgScale;
+    ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+  });
+}
+
+
+// ═══════════════════════════════════════════
+// Tool mode management
+// ═══════════════════════════════════════════
+function setToolMode(mode) {
+  toolMode = mode;
+  const ids = { box: 'toolBox', pos_point: 'toolPosPoint', neg_point: 'toolNegPoint', brush: 'toolBrush', eraser: 'toolEraser' };
+  document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+  if (ids[mode]) document.getElementById(ids[mode]).classList.add('active');
+  document.getElementById('brushControls').style.display = mode === 'brush' ? 'block' : 'none';
+  document.getElementById('eraserControls').style.display = mode === 'eraser' ? 'flex' : 'none';
+
+  // When brush is selected and no mask canvas exists yet, create one
+  if (mode === 'brush' && activeFrameIdx >= 0 && !maskCanvasEl) {
+    const f = frames[activeFrameIdx];
+    ensureMaskCanvas(f.img.naturalWidth, f.img.naturalHeight);
+    // Enable approve/save since brush is always an approved edit
+    document.getElementById('btnApprove').disabled = false;
+    document.getElementById('btnReject').disabled = false;
+  }
+
+  renderCanvas();
+}
+
+function setBrushMode(mode) {
+  brushMode = mode;
+  document.getElementById('brushModeAdd').classList.toggle('active', mode === 'add');
+  document.getElementById('brushModeSub').classList.toggle('active', mode === 'subtract');
+}
+
+function clearBrushMask() {
+  if (!maskCanvasEl) return;
+  maskCanvasCtx.clearRect(0, 0, maskCanvasEl.width, maskCanvasEl.height);
+  updateMaskB64();
+  renderCanvas();
+  toast('Brush mask cleared');
+}
+
+function clearPoints() {
+  pointPrompts = [];
+  document.getElementById('pointsList').innerHTML = '';
+  document.getElementById('pointsActions').style.display = 'none';
+  renderCanvas();
+}
+
+function updatePointsList() {
+  const list = document.getElementById('pointsList');
+  list.innerHTML = '';
+  pointPrompts.forEach((pt, i) => {
+    const div = document.createElement('div');
+    div.className = 'point-list-item';
+    const isPos = pt.label === 1;
+    div.innerHTML = `
+      <span class="point-dot ${isPos ? 'pos' : 'neg'}"></span>
+      <span>${isPos ? '+' : '−'} (${Math.round(pt.x)}, ${Math.round(pt.y)})</span>
+      <span style="margin-left:auto; cursor:pointer; color:var(--red);" onclick="removePoint(${i})">✕</span>
+    `;
+    list.appendChild(div);
+  });
+  document.getElementById('pointsActions').style.display = pointPrompts.length > 0 ? 'flex' : 'none';
+}
+
+function removePoint(idx) {
+  pointPrompts.splice(idx, 1);
+  updatePointsList();
+  renderCanvas();
+}
+
+
+// ═══════════════════════════════════════════
+// Canvas interactions
+// ═══════════════════════════════════════════
+canvas.addEventListener('mousedown', e => {
+  if (activeFrameIdx < 0) return;
+  const { x, y } = canvasToImg(e);
+
+  if (toolMode === 'box') {
+    if (!editBox) return;
+    const hit = hitTest(x, y, editBox);
+    if (hit) {
+      dragging = hit;
+      dragStart = { x, y, box: { ...editBox } };
+      e.preventDefault();
+    }
+  } else if (toolMode === 'pos_point' || toolMode === 'neg_point') {
+    const label = toolMode === 'pos_point' ? 1 : 0;
+    pointPrompts.push({ x, y, label });
+    updatePointsList();
+    renderCanvas();
+  } else if (toolMode === 'brush') {
+    const f = frames[activeFrameIdx];
+    ensureMaskCanvas(f.img.naturalWidth, f.img.naturalHeight);
+    isBrushPainting = true;
+    paintBrush(x, y);
+    renderCanvas();
+    e.preventDefault();
+  } else if (toolMode === 'eraser') {
+    if (!maskCanvasEl) return;
+    isErasing = true;
+    const r = parseInt(document.getElementById('eraserSize').value) || 20;
+    eraseAtPoint(Math.round(x), Math.round(y), r);
+    renderCanvas();
+    e.preventDefault();
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  const { x, y } = canvasToImg(e);
+
+  if (toolMode === 'brush') {
+    renderCanvas();
+    // Draw brush cursor
+    const cx = imgOffX + x * imgScale;
+    const cy = imgOffY + y * imgScale;
+    const r = parseInt(document.getElementById('brushSize').value) || 12;
+    const cr = r * imgScale;
+    ctx.beginPath();
+    ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+    ctx.strokeStyle = brushMode === 'add' ? 'rgba(50,200,255,0.8)' : 'rgba(248,81,73,0.8)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    if (isBrushPainting && maskCanvasEl) {
+      paintBrush(x, y);
+      renderCanvas();
+      // Redraw cursor after re-render
+      const cx2 = imgOffX + x * imgScale;
+      const cy2 = imgOffY + y * imgScale;
+      ctx.beginPath();
+      ctx.arc(cx2, cy2, cr, 0, Math.PI * 2);
+      ctx.strokeStyle = brushMode === 'add' ? 'rgba(50,200,255,0.8)' : 'rgba(248,81,73,0.8)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+    return;
+  }
+
+  if (toolMode === 'eraser') {
+    renderCanvas();
+    const cx = imgOffX + x * imgScale;
+    const cy = imgOffY + y * imgScale;
+    const r = parseInt(document.getElementById('eraserSize').value) || 20;
+    const cr = r * imgScale;
+    ctx.beginPath();
+    ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    if (isErasing && maskCanvasEl) {
+      eraseAtPoint(Math.round(x), Math.round(y), r);
+      renderCanvas();
+      const cx2 = imgOffX + x * imgScale;
+      const cy2 = imgOffY + y * imgScale;
+      ctx.beginPath();
+      ctx.arc(cx2, cy2, cr, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    return;
+  }
+
+  if (toolMode === 'box') {
+    if (!dragging || !editBox) return;
+    const dx = x - dragStart.x;
+    const dy = y - dragStart.y;
+    const ob = dragStart.box;
+    if (dragging === 'move') {
+      const bw = ob.x2 - ob.x1;
+      const bh = ob.y2 - ob.y1;
+      editBox.x1 = ob.x1 + dx;
+      editBox.y1 = ob.y1 + dy;
+      editBox.x2 = editBox.x1 + bw;
+      editBox.y2 = editBox.y1 + bh;
+    } else if (dragging === 'nw') { editBox.x1 = ob.x1 + dx; editBox.y1 = ob.y1 + dy; }
+    else if (dragging === 'ne') { editBox.x2 = ob.x2 + dx; editBox.y1 = ob.y1 + dy; }
+    else if (dragging === 'sw') { editBox.x1 = ob.x1 + dx; editBox.y2 = ob.y2 + dy; }
+    else if (dragging === 'se') { editBox.x2 = ob.x2 + dx; editBox.y2 = ob.y2 + dy; }
+    renderCanvas();
+  }
+});
+
+canvas.addEventListener('mouseup', () => {
+  dragging = null;
+  if (isBrushPainting) {
+    isBrushPainting = false;
+    updateMaskB64();
+    // Mark mask as available for approve/save
+    maskApproved = false;
+    maskScore = 0;
+    document.getElementById('btnApprove').disabled = false;
+    document.getElementById('btnReject').disabled = false;
+    document.getElementById('btnSave').disabled = true;
+    document.getElementById('maskInfo').style.display = 'block';
+    document.getElementById('maskScoreText').textContent = 'Manual brush mask — click ✓ Approve to save';
+  }
+  if (isErasing) {
+    isErasing = false;
+    updateMaskB64();
+  }
+});
+
+canvas.addEventListener('mouseleave', () => {
+  dragging = null;
+  if (isBrushPainting) {
+    isBrushPainting = false;
+    updateMaskB64();
+  }
+  if (isErasing) {
+    isErasing = false;
+    updateMaskB64();
+  }
+  if (activeFrameIdx >= 0) renderCanvas();
+});
+
+// ── Brush painting ──
+function paintBrush(imgX, imgY) {
+  if (!maskCanvasCtx) return;
+  const r = parseInt(document.getElementById('brushSize').value) || 12;
+  maskCanvasCtx.beginPath();
+  maskCanvasCtx.arc(imgX, imgY, r, 0, Math.PI * 2);
+  if (brushMode === 'add') {
+    maskCanvasCtx.fillStyle = '#ffffff';
+    maskCanvasCtx.fill();
+  } else {
+    // Subtract: erase
+    maskCanvasCtx.fillStyle = '#000000';
+    maskCanvasCtx.fill();
+  }
+}
+
+function eraseAtPoint(imgX, imgY, radius) {
+  if (!maskCanvasCtx) return;
+  maskCanvasCtx.beginPath();
+  maskCanvasCtx.arc(imgX, imgY, radius, 0, Math.PI * 2);
+  maskCanvasCtx.fillStyle = '#000000';
+  maskCanvasCtx.fill();
+}
+
+function canvasToImg(e) {
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left;
+  const cy = e.clientY - rect.top;
+  return {
+    x: (cx - imgOffX) / imgScale,
+    y: (cy - imgOffY) / imgScale,
+  };
+}
+
+function hitTest(x, y, box) {
+  const tol = 10 / imgScale;
+  if (Math.abs(x - box.x1) < tol && Math.abs(y - box.y1) < tol) return 'nw';
+  if (Math.abs(x - box.x2) < tol && Math.abs(y - box.y1) < tol) return 'ne';
+  if (Math.abs(x - box.x1) < tol && Math.abs(y - box.y2) < tol) return 'sw';
+  if (Math.abs(x - box.x2) < tol && Math.abs(y - box.y2) < tol) return 'se';
+  if (x >= box.x1 && x <= box.x2 && y >= box.y1 && y <= box.y2) return 'move';
+  return null;
+}
+
+
+// ═══════════════════════════════════════════
+// DINO
+// ═══════════════════════════════════════════
+async function runDino() {
+  if (activeFrameIdx < 0) return toast('Select a frame first');
+  const prompt = document.getElementById('dinoPrompt').value.trim();
+  if (!prompt) return toast('Enter a DINO prompt');
+  const f = frames[activeFrameIdx];
+  const threshold = parseFloat(document.getElementById('dinoThreshold').value);
+  document.getElementById('spinDino').classList.add('active');
+  document.getElementById('btnRunDino').disabled = true;
+  try {
+    const data = await api('/api/dino', { frame_path: f.path, prompt, threshold });
+    dinoBoxes = data.candidates;
+    currentBoxIdx = dinoBoxes.length > 0 ? 0 : -1;
+    editBox = null;
+    maskImg = null;
+    maskCanvasEl = null;
+    maskCanvasCtx = null;
+    document.getElementById('dotDino').className = 'dot dot-on';
+    if (dinoBoxes.length === 0) {
+      toast('No detections found. Try lowering the threshold.');
+      document.getElementById('boxNav').style.display = 'none';
+    } else {
+      document.getElementById('boxNav').style.display = 'flex';
+      updateBoxNav();
+      toast(`Found ${dinoBoxes.length} candidate(s)`);
+    }
+    document.getElementById('btnSetBox').disabled = dinoBoxes.length === 0;
+    renderCanvas();
+  } catch (e) {
+    toast('DINO error: ' + e.message);
+  } finally {
+    document.getElementById('spinDino').classList.remove('active');
+    document.getElementById('btnRunDino').disabled = false;
+  }
+}
+
+function prevBox() {
+  if (dinoBoxes.length === 0) return;
+  currentBoxIdx = (currentBoxIdx - 1 + dinoBoxes.length) % dinoBoxes.length;
+  editBox = null; maskImg = null; maskCanvasEl = null; maskCanvasCtx = null;
+  updateBoxNav(); renderCanvas();
+}
+
+function nextBox() {
+  if (dinoBoxes.length === 0) return;
+  currentBoxIdx = (currentBoxIdx + 1) % dinoBoxes.length;
+  editBox = null; maskImg = null; maskCanvasEl = null; maskCanvasCtx = null;
+  updateBoxNav(); renderCanvas();
+}
+
+function updateBoxNav() {
+  document.getElementById('boxLabel').textContent = `box${currentBoxIdx + 1} / ${dinoBoxes.length}`;
+  const c = dinoBoxes[currentBoxIdx];
+  document.getElementById('boxScoreArea').innerHTML =
+    `<span class="score-badge">${c.label}: ${c.score}</span>`;
+}
+
+
+// ═══════════════════════════════════════════
+// Set Box
+// ═══════════════════════════════════════════
+function setBox() {
+  if (currentBoxIdx < 0) return;
+  const [x1, y1, x2, y2] = dinoBoxes[currentBoxIdx].box;
+  editBox = { x1, y1, x2, y2 };
+  document.getElementById('btnRunSam3').disabled = false;
+  toast('Box set — drag corners to refine, then Run SAM3');
+  renderCanvas();
+}
+
+
+// ═══════════════════════════════════════════
+// SAM3
+// ═══════════════════════════════════════════
+async function runSam3() {
+  if (activeFrameIdx < 0) return toast('Select a frame first');
+  const f = frames[activeFrameIdx];
+  const textPrompt = document.getElementById('sam3Prompt').value.trim();
+  const payload = { frame_path: f.path };
+  if (editBox) payload.box = [editBox.x1, editBox.y1, editBox.x2, editBox.y2];
+  if (textPrompt) payload.text_prompt = textPrompt;
+  if (pointPrompts.length > 0) payload.points = pointPrompts.map(p => ({ x: p.x, y: p.y, label: p.label }));
+  if (!payload.box && !payload.text_prompt && !payload.points) {
+    return toast('Set a box, add points, or enter a text prompt');
+  }
+  document.getElementById('spinSam3').classList.add('active');
+  document.getElementById('btnRunSam3').disabled = true;
+  try {
+    const data = await api('/api/sam3', payload);
+    document.getElementById('dotSam3').className = 'dot dot-on';
+    if (data.masks && data.masks.length > 0) {
+      const best = data.masks[0];
+      maskB64 = best.mask_b64;
+      maskScore = best.score;
+      maskApproved = false;
+      const maskPng = 'data:image/png;base64,' + best.mask_b64;
+      maskImg = new Image();
+      maskImg.onload = () => {
+        maskCanvasEl = document.createElement('canvas');
+        maskCanvasEl.width = maskImg.naturalWidth;
+        maskCanvasEl.height = maskImg.naturalHeight;
+        maskCanvasCtx = maskCanvasEl.getContext('2d');
+        maskCanvasCtx.drawImage(maskImg, 0, 0);
+        renderCanvas();
+      };
+      maskImg.src = maskPng;
+      document.getElementById('maskInfo').style.display = 'block';
+      document.getElementById('maskScoreText').textContent = `Mask score: ${maskScore} — ${data.count} candidate(s)`;
+      document.getElementById('btnApprove').disabled = false;
+      document.getElementById('btnReject').disabled = false;
+      toast('SAM3 mask generated');
+    } else {
+      toast('No masks returned');
+    }
+  } catch (e) {
+    toast('SAM3 error: ' + e.message);
+  } finally {
+    document.getElementById('spinSam3').classList.remove('active');
+    document.getElementById('btnRunSam3').disabled = false;
+  }
+}
+
+
+// ═══════════════════════════════════════════
+// Approve / Reject
+// ═══════════════════════════════════════════
+function approveMask() {
+  // Sync maskB64 from current offscreen canvas before approving
+  updateMaskB64();
+  maskApproved = true;
+  document.getElementById('btnSave').disabled = false;
+  toast('Mask approved — ready to save');
+}
+
+function rejectMask() {
+  maskImg = null;
+  maskCanvasEl = null;
+  maskCanvasCtx = null;
+  maskApproved = false;
+  maskB64 = null;
+  document.getElementById('maskInfo').style.display = 'none';
+  document.getElementById('btnApprove').disabled = true;
+  document.getElementById('btnReject').disabled = true;
+  document.getElementById('btnSave').disabled = true;
+  renderCanvas();
+  toast('Mask rejected — adjust box and rerun SAM3');
+}
+
+
+// ═══════════════════════════════════════════
+// Save
+// ═══════════════════════════════════════════
+async function saveAnnotation() {
+  if (!maskApproved || !maskB64) return toast('Approve a mask first');
+  if (!experiment) return toast('No experiment set');
+  if (!selectedCategoryId) return toast('Choose a category before saving');
+
+  const cat = categories.find(c => c.id === selectedCategoryId);
+  if (!cat) return toast('Selected category not found');
+
+  const f = frames[activeFrameIdx];
+  const box = editBox
+    ? [editBox.x1, editBox.y1, editBox.x2, editBox.y2]
+    : (currentBoxIdx >= 0 ? dinoBoxes[currentBoxIdx]?.box : null);
+  try {
+    const data = await api('/api/save', {
+      experiment,
+      frame_id: f.id,
+      frame_path: f.path,
+      box,
+      mask_b64: maskB64,
+      prompt: document.getElementById('dinoPrompt').value || document.getElementById('sam3Prompt').value,
+      label: cat.name,
+      category: cat.name,
+      category_id: cat.id,
+      category_color: cat.color,
+      video_name: currentVideoName || 'unknown',
+      timestamp: f.timestamp,
+      score: maskScore,
+    });
+    toast('Saved: ' + data.annotation_id + ' [' + cat.name + ']');
+    updateCounts();
+    loadAnnotations();
+  } catch (e) {
+    toast('Save error: ' + e.message);
+  }
+}
+
+
+// ═══════════════════════════════════════════
+// Annotation list (collapsible sidebar)
+// ═══════════════════════════════════════════
+function toggleAnnotations() {
+  annCollapsed = !annCollapsed;
+  document.getElementById('annCollapsible').classList.toggle('open', !annCollapsed);
+  const arrow = document.getElementById('annArrow');
+  arrow.classList.toggle('open', !annCollapsed);
+}
+
+async function loadAnnotations() {
+  if (!experiment) return;
+  try {
+    const data = await api(`/api/annotations/${experiment}`);
+    const list = document.getElementById('annotationList');
+    list.innerHTML = '';
+    document.getElementById('annotCount').textContent = data.count + ' saved';
+    document.getElementById('annotCountBadge').textContent = data.count > 0 ? `(${data.count})` : '';
+
+    data.annotations.forEach(a => {
+      const div = document.createElement('div');
+      div.className = 'annotation-item';
+      const catColor = a.category_color || '#58a6ff';
+      const catName  = a.category || a.label || '(unlabeled)';
+      div.innerHTML = `
+        <span style="display:inline-flex;align-items:center;gap:5px;">
+          <span style="width:9px;height:9px;border-radius:50%;background:${catColor};display:inline-block;flex-shrink:0;"></span>
+          <span class="ann-label" style="color:${catColor}">${escHtml(catName)}</span>
+        </span>
+        <span style="color:var(--text-dim)"> — ${a.frame_id}</span><br/>
+        <span style="color:var(--text-dim); font-size:11px">score: ${a.score} | ${(a.created_at||'').slice(0,19)}</span>
+      `;
+      list.appendChild(div);
+    });
+  } catch (e) { /* ignore */ }
+}
+
+
+// ═══════════════════════════════════════════
+// Annotation Viewer Modal
+// ═══════════════════════════════════════════
+async function openAnnViewer() {
+  if (!experiment) return toast('Load an experiment first');
+  const modal = document.getElementById('annViewerModal');
+  modal.classList.add('show');
+  document.getElementById('annViewerTitle').textContent = experiment;
+  document.getElementById('annViewerBody').innerHTML = `
+    <div class="ann-viewer-spinner">
+      <div class="spinner active" style="display:inline-block;"></div>
+      <span>Loading annotations…</span>
+    </div>`;
+
+  try {
+    const data = await api(`/api/annotations/${experiment}`);
+    const annotations = data.annotations || [];
+    document.getElementById('annViewerCount').textContent = `${annotations.length} annotation(s)`;
+
+    if (annotations.length === 0) {
+      document.getElementById('annViewerBody').innerHTML =
+        '<div style="padding:40px; text-align:center; color:var(--text-dim);">No annotations saved yet for this experiment.</div>';
+      return;
+    }
+
+    const body = document.getElementById('annViewerBody');
+    body.innerHTML = '';
+
+    for (const ann of annotations) {
+      const card = document.createElement('div');
+      card.className = 'ann-card';
+
+      // Header
+      const boxStr = ann.box ? ann.box.map(v => Math.round(v)).join(', ') : 'N/A';
+      const catColor = ann.category_color || '#58a6ff';
+      const catName  = ann.category || ann.label || ann.prompt || '—';
+      card.innerHTML = `
+        <div class="ann-card-header">
+          <span class="ann-id">${ann.annotation_id}</span>
+          <span style="display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:3px;background:${catColor}22;border:1px solid ${catColor}55;font-size:11px;font-weight:600;color:${catColor}">
+            <span style="width:8px;height:8px;border-radius:50%;background:${catColor};display:inline-block;flex-shrink:0;"></span>
+            ${escHtml(catName)}
+          </span>
+          <span class="ann-meta">score: ${ann.score}</span>
+          <span class="ann-meta">t=${ann.timestamp}s</span>
+          <span class="ann-meta" style="color:var(--text-dim)">box: [${boxStr}]</span>
+          <span class="ann-meta" style="margin-left:auto">${(ann.created_at||'').slice(0,19)}</span>
+        </div>
+        <div class="ann-card-images">
+          <div class="ann-img-cell">
+            <div class="cell-label">Frame</div>
+            <canvas id="frame-${ann.annotation_id}"></canvas>
+          </div>
+          <div class="ann-img-cell">
+            <div class="cell-label" style="color:${catColor}">Mask · ${escHtml(catName)}</div>
+            <canvas id="mask-${ann.annotation_id}"></canvas>
+          </div>
+          <div class="ann-img-cell">
+            <div class="cell-label">Overlay</div>
+            <canvas id="overlay-${ann.annotation_id}"></canvas>
+          </div>
+        </div>`;
+      body.appendChild(card);
+
+      // Render images async
+      renderAnnCard(ann);
+    }
+  } catch (e) {
+    document.getElementById('annViewerBody').innerHTML =
+      `<div style="padding:40px; text-align:center; color:var(--red);">Error loading annotations: ${e.message}</div>`;
+  }
+}
+
+async function renderAnnCard(ann) {
+  // /api/file?path=  serves files relative to EXPERIMENTS_DIR on the backend.
+  // ann.frame_path and ann.mask_path are ABSOLUTE paths stored in the JSON,
+  // e.g. /sc/arion/.../sam3/experiments/test_mar_17/frames/frame_xxx.png
+  //
+  // We build the relative path as:  <exp_name>/<subfolder>/<filename>
+  // using the experiment name we already have + just the filename from the stored path.
+  // This is the same approach as the notebook:
+  //   frame_path = exp_dir / "frames" / Path(meta["frame_path"]).name
+
+  const loadImg = (src) => new Promise((res, rej) => {
+    const img = new Image();
+    // No crossOrigin — same-origin request, setting it can cause CORS failures
+    img.onload = () => res(img);
+    img.onerror = () => rej(new Error('Failed to load: ' + src));
+    img.src = src;
+  });
+
+  // Extract just the filename (basename) from an absolute path string
+  const basename = (p) => p ? p.split('/').pop() : '';
+
+  const frameRel   = experiment + '/frames/' + basename(ann.frame_path);
+  const maskRel    = experiment + '/masks/'  + basename(ann.mask_path);
+  const frameUrl   = '/api/file?path=' + encodeURIComponent(frameRel);
+  const maskUrl    = '/api/file?path=' + encodeURIComponent(maskRel);
+
+  const markError = (msg) => {
+    ['frame', 'mask', 'overlay'].forEach(k => {
+      const c = document.getElementById(k + '-' + ann.annotation_id);
+      if (!c) return;
+      c.width = 320; c.height = 48;
+      const cx = c.getContext('2d');
+      cx.fillStyle = '#1c2129';
+      cx.fillRect(0, 0, 320, 48);
+      cx.fillStyle = '#f85149';
+      cx.font = '11px monospace';
+      cx.fillText('⚠ ' + msg, 8, 28);
+    });
+  };
+
+  try {
+    const [frameImg, maskImg] = await Promise.all([
+      loadImg(frameUrl),
+      loadImg(maskUrl),
+    ]);
+
+    const W = frameImg.naturalWidth;
+    const H = frameImg.naturalHeight;
+
+    // Use stored category color, fall back to cyan
+    const [tR, tG, tB] = hexToRgb(ann.category_color || '#32c8ff');
+
+    // ── 1. Frame canvas — image + green box overlay ──
+    const fc = document.getElementById('frame-' + ann.annotation_id);
+    if (!fc) return;
+    fc.width = W; fc.height = H;
+    const fctx = fc.getContext('2d');
+    fctx.drawImage(frameImg, 0, 0);
+    if (ann.box) {
+      const [bx1, by1, bx2, by2] = ann.box;
+      fctx.strokeStyle = ann.category_color || '#3fb950';
+      fctx.lineWidth = Math.max(2, Math.round(W / 400));
+      fctx.strokeRect(bx1, by1, bx2 - bx1, by2 - by1);
+    }
+
+    // ── 2. Read raw mask pixels (grayscale L-mode PNG, R channel = luminance) ──
+    const maskTmp = document.createElement('canvas');
+    maskTmp.width = W; maskTmp.height = H;
+    const maskTmpCtx = maskTmp.getContext('2d');
+    maskTmpCtx.drawImage(maskImg, 0, 0, W, H);
+    const maskRaw = maskTmpCtx.getImageData(0, 0, W, H).data; // RGBA, R=gray value
+
+    // ── 3. Mask canvas — tinted with category color ──
+    const mc = document.getElementById('mask-' + ann.annotation_id);
+    if (!mc) return;
+    mc.width = W; mc.height = H;
+    const mctx = mc.getContext('2d');
+    const mData = mctx.createImageData(W, H);
+    const md = mData.data;
+    for (let i = 0; i < maskRaw.length; i += 4) {
+      if (maskRaw[i] > 128) {
+        md[i] = tR; md[i+1] = tG; md[i+2] = tB; md[i+3] = 255;
+      } else {
+        md[i] = 20; md[i+1] = 24; md[i+2] = 31; md[i+3] = 255;
+      }
+    }
+    mctx.putImageData(mData, 0, 0);
+
+    // ── 4. Overlay canvas — frame blended with category color, α=0.45 ──
+    const oc = document.getElementById('overlay-' + ann.annotation_id);
+    if (!oc) return;
+    oc.width = W; oc.height = H;
+    const octx = oc.getContext('2d');
+    octx.drawImage(frameImg, 0, 0);
+    const baseData = octx.getImageData(0, 0, W, H);
+    const bd = baseData.data;
+    const alpha = 0.45;
+    for (let i = 0; i < maskRaw.length; i += 4) {
+      if (maskRaw[i] > 128) {
+        bd[i]     = Math.round(bd[i]     * (1 - alpha) + tR * alpha);
+        bd[i + 1] = Math.round(bd[i + 1] * (1 - alpha) + tG * alpha);
+        bd[i + 2] = Math.round(bd[i + 2] * (1 - alpha) + tB * alpha);
+      }
+    }
+    octx.putImageData(baseData, 0, 0);
+
+  } catch (err) {
+    markError(err.message);
+  }
+}
+
+function closeAnnViewer() {
+  document.getElementById('annViewerModal').classList.remove('show');
+}
+
+
+// ═══════════════════════════════════════════
+// Expand / Collapse Frame
+// ═══════════════════════════════════════════
+function expandFrame() {
+  if (activeFrameIdx < 0) return toast('No frame selected');
+  const modal = document.getElementById('expandModal');
+  const expCanvas = document.getElementById('expandCanvas');
+  const expCtx = expCanvas.getContext('2d');
+  const f = frames[activeFrameIdx];
+  const img = f.img;
+  const maxW = window.innerWidth * 0.95;
+  const maxH = window.innerHeight * 0.95;
+  const scale = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 1);
+  const w = Math.floor(img.naturalWidth * scale);
+  const h = Math.floor(img.naturalHeight * scale);
+  expCanvas.width = w;
+  expCanvas.height = h;
+  expCtx.drawImage(img, 0, 0, w, h);
+
+  if (maskCanvasEl) {
+    const opacity = parseFloat(document.getElementById('maskOpacity').value) || 0.4;
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width = w; tmpCanvas.height = h;
+    const tmpCtx = tmpCanvas.getContext('2d');
+    tmpCtx.drawImage(maskCanvasEl, 0, 0, w, h);
+    const maskData = tmpCtx.getImageData(0, 0, w, h);
+    const baseData = expCtx.getImageData(0, 0, w, h);
+    const bd = baseData.data; const md = maskData.data;
+    const [tR, tG, tB] = activeCategoryRgb();
+    for (let i = 0; i < md.length; i += 4) {
+      if (md[i] > 128) {
+        bd[i]     = Math.round(bd[i]     * (1 - opacity) + tR * opacity);
+        bd[i + 1] = Math.round(bd[i + 1] * (1 - opacity) + tG * opacity);
+        bd[i + 2] = Math.round(bd[i + 2] * (1 - opacity) + tB * opacity);
+      }
+    }
+    expCtx.putImageData(baseData, 0, 0);
+  }
+
+  if (editBox) {
+    const s = scale;
+    expCtx.strokeStyle = '#3fb950';
+    expCtx.lineWidth = 2;
+    expCtx.strokeRect(editBox.x1 * s, editBox.y1 * s, (editBox.x2 - editBox.x1) * s, (editBox.y2 - editBox.y1) * s);
+  }
+
+  pointPrompts.forEach(pt => {
+    expCtx.beginPath();
+    expCtx.arc(pt.x * scale, pt.y * scale, 8, 0, Math.PI * 2);
+    expCtx.fillStyle = pt.label === 1 ? '#3fb950' : '#f85149';
+    expCtx.fill();
+    expCtx.strokeStyle = '#fff';
+    expCtx.lineWidth = 2;
+    expCtx.stroke();
+  });
+
+  modal.classList.add('show');
+}
+
+function collapseFrame() {
+  document.getElementById('expandModal').classList.remove('show');
+}
+
+
+// ═══════════════════════════════════════════
+// Health check + init
+// ═══════════════════════════════════════════
+async function checkHealth() {
+  try {
+    const data = await api('/api/health');
+    if (data.dino_loaded) document.getElementById('dotDino').className = 'dot dot-on';
+    if (data.sam3_loaded) document.getElementById('dotSam3').className = 'dot dot-on';
+  } catch (e) { }
+}
+
+function updateCounts() {
+  document.getElementById('frameCount').textContent = frames.length + ' frames';
+}
+
+window.addEventListener('resize', () => { if (activeFrameIdx >= 0) renderCanvas(); });
+
+// Init
+checkHealth();
+refreshExpList();
+</script>
+</body>
+</html>

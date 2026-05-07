@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Video Annotation Tool</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      display: flex;
+      height: 100vh;
+    }
+
+    #video-container {
+      flex: 4;
+      background: black;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      min-width: 0;
+    }
+
+    video {
+      max-width: 100%;
+      max-height: 100%;
+      background: black;
+    }
+
+    #controls {
+      width: 100%;
+      padding: 8px;
+      background: #111;
+      color: white;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      box-sizing: border-box;
+    }
+
+    #panel {
+      flex: 1;
+      padding: 12px;
+      border-left: 1px solid #ccc;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-size: 14px;
+      overflow-y: auto;
+      min-width: 320px;
+      box-sizing: border-box;
+    }
+
+    input, select, button, textarea {
+      padding: 5px;
+      font-size: 14px;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 60px;
+      resize: vertical;
+      font-family: Arial, sans-serif;
+      box-sizing: border-box;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    th, td {
+      border: 1px solid #ccc;
+      padding: 4px;
+      text-align: center;
+    }
+
+    .time-input {
+      width: 80px;
+    }
+
+    .skip-controls,
+    .speed-controls,
+    .add-category-controls {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .section-label {
+      font-weight: bold;
+      margin-bottom: 2px;
+    }
+
+    .hint {
+      font-size: 12px;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+
+<div id="video-container">
+  <video id="video" controls></video>
+
+  <div id="controls">
+    <input type="file" id="videoFile" accept="video/*" />
+    <input type="file" id="csvFile" accept=".csv" style="display:none" />
+
+    <div class="skip-controls">
+      <label>Skip (sec):
+        <input type="number" id="skipSeconds" value="1" min="0.1" step="0.1" style="width: 60px;" />
+      </label>
+      <button onclick="skipBackward()">← Skip Back</button>
+      <button onclick="skipForward()">Skip Forward →</button>
+    </div>
+
+    <div class="speed-controls">
+      <label for="playbackSpeed">Playback Speed:</label>
+      <select id="playbackSpeed" onchange="setPlaybackSpeed()"></select>
+      <span id="speedDisplay">Speed: 1.0x</span>
+    </div>
+
+    <button onclick="setStart()">Set Start</button>
+    <button onclick="setEnd()">Set End</button>
+    <span id="timeDisplay">Time: 0.0s</span>
+  </div>
+</div>
+
+<div id="panel">
+  <h3>Annotation</h3>
+
+  <label>Action:
+    <select id="action"></select>
+  </label>
+
+  <div>
+    <div class="section-label">Add new category</div>
+    <div class="add-category-controls">
+      <input
+        type="text"
+        id="newCategory"
+        placeholder="Enter a new action category"
+        style="flex: 1;"
+      />
+      <button onclick="addCategory()">Add Category</button>
+    </div>
+    <div class="hint">New categories are added to the dropdown immediately.</div>
+  </div>
+
+  <label>Start time (seconds):
+    <input type="number" id="startTime" class="time-input" step="0.1" min="0" />
+  </label>
+
+  <label>End time (seconds):
+    <input type="number" id="endTime" class="time-input" step="0.1" min="0" />
+  </label>
+
+  <label>Comments:
+    <textarea id="comments" placeholder="Add any notes or comments..."></textarea>
+  </label>
+
+  <button onclick="addAnnotation()">Add Annotation</button>
+  <button onclick="downloadCSV()">Download CSV</button>
+
+  <h4>Annotations</h4>
+  <div style="overflow-x: auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>Action</th>
+          <th>Start (s)</th>
+          <th>End (s)</th>
+          <th>Comments</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="tableBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  const video = document.getElementById("video");
+  const timeDisplay = document.getElementById("timeDisplay");
+  const csvFileInput = document.getElementById("csvFile");
+  const actionSelect = document.getElementById("action");
+  const playbackSpeedSelect = document.getElementById("playbackSpeed");
+  const speedDisplay = document.getElementById("speedDisplay");
+
+  let annotations = [];
+  let currentVideoBasename = "";
+
+  const defaultActions = [
+    "Cold cut",
+    "Hot cut",
+    "Static Cauterize",
+    "Slicing Cauterize",
+    "Peel",
+    "Hovering",
+    "Approaching the tissue",
+    "Retracting from the tissue",
+    "Hook",
+    "Absent",
+    "Idle"
+  ];
+
+  const playbackSpeeds = [
+    0.1, 0.15, 0.2, 0.25, 0.33, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0
+  ];
+
+  function initActions() {
+    actionSelect.innerHTML = "";
+    defaultActions.forEach(action => {
+      const option = document.createElement("option");
+      option.value = action;
+      option.textContent = action;
+      actionSelect.appendChild(option);
+    });
+  }
+
+  function initPlaybackSpeeds() {
+    playbackSpeedSelect.innerHTML = "";
+    playbackSpeeds.forEach(speed => {
+      const option = document.createElement("option");
+      option.value = speed;
+      option.textContent = `${speed}x`;
+      if (speed === 1.0) option.selected = true;
+      playbackSpeedSelect.appendChild(option);
+    });
+    video.playbackRate = 1.0;
+    speedDisplay.textContent = "Speed: 1.0x";
+  }
+
+  function setPlaybackSpeed() {
+    const speed = parseFloat(playbackSpeedSelect.value) || 1.0;
+    video.playbackRate = speed;
+    speedDisplay.textContent = `Speed: ${speed}x`;
+  }
+
+  function addCategory() {
+    const input = document.getElementById("newCategory");
+    const rawValue = input.value.trim();
+
+    if (!rawValue) {
+      alert("Please enter a category name.");
+      return;
+    }
+
+    const exists = Array.from(actionSelect.options).some(
+      opt => opt.value.toLowerCase() === rawValue.toLowerCase()
+    );
+
+    if (exists) {
+      alert("This category already exists.");
+      return;
+    }
+
+    const option = document.createElement("option");
+    option.value = rawValue;
+    option.textContent = rawValue;
+    actionSelect.appendChild(option);
+    actionSelect.value = rawValue;
+
+    input.value = "";
+  }
+
+  document.getElementById("videoFile").addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (file) {
+      video.src = URL.createObjectURL(file);
+      video.load();
+
+      currentVideoBasename = file.name.replace(/\.[^/.]+$/, "");
+      csvFileInput.click();
+    }
+  });
+
+  csvFileInput.addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (file) {
+      loadCSV(file);
+    } else {
+      annotations = [];
+      updateTable();
+    }
+    csvFileInput.value = "";
+  });
+
+  function loadCSV(file) {
+    const reader = new FileReader();
+    reader.onload = function(event) {
+      const csv = event.target.result;
+      const lines = csv.split('\n');
+
+      annotations = [];
+
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line === "") continue;
+
+        const parts = parseCSVLine(line);
+        if (parts.length >= 3) {
+          const action = parts[0];
+
+          if (
+            action &&
+            !Array.from(actionSelect.options).some(
+              opt => opt.value.toLowerCase() === action.toLowerCase()
+            )
+          ) {
+            const option = document.createElement("option");
+            option.value = action;
+            option.textContent = action;
+            actionSelect.appendChild(option);
+          }
+
+          annotations.push({
+            action: parts[0],
+            start: parts[1],
+            end: parts[2],
+            comments: parts[3] || ""
+          });
+        }
+      }
+
+      updateTable();
+      alert(`Loaded ${annotations.length} annotations from CSV`);
+    };
+    reader.readAsText(file);
+  }
+
+  function parseCSVLine(line) {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        result.push(current);
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+
+    result.push(current);
+    return result.map(s => s.trim());
+  }
+
+  function currentTime() {
+    return parseFloat(video.currentTime.toFixed(1));
+  }
+
+  video.addEventListener("timeupdate", () => {
+    timeDisplay.textContent = `Time: ${currentTime()}s`;
+  });
+
+  function skipBackward() {
+    const skipAmount = parseFloat(document.getElementById("skipSeconds").value) || 1;
+    video.currentTime = Math.max(0, video.currentTime - skipAmount);
+  }
+
+  function skipForward() {
+    const skipAmount = parseFloat(document.getElementById("skipSeconds").value) || 1;
+    const duration = isFinite(video.duration) ? video.duration : Number.MAX_SAFE_INTEGER;
+    video.currentTime = Math.min(duration, video.currentTime + skipAmount);
+  }
+
+  function setStart() {
+    document.getElementById("startTime").value = currentTime();
+  }
+
+  function setEnd() {
+    document.getElementById("endTime").value = currentTime();
+  }
+
+  function addAnnotation() {
+    const action = document.getElementById("action").value;
+    const start = document.getElementById("startTime").value;
+    const end = document.getElementById("endTime").value;
+    const comments = document.getElementById("comments").value;
+
+    if (start === "" || end === "") {
+      alert("Start and End times required");
+      return;
+    }
+
+    const startNum = parseFloat(start);
+    const endNum = parseFloat(end);
+
+    if (isNaN(startNum) || isNaN(endNum)) {
+      alert("Start and End times must be valid numbers.");
+      return;
+    }
+
+    if (endNum < startNum) {
+      alert("End time must be greater than or equal to Start time.");
+      return;
+    }
+
+    annotations.push({
+      action,
+      start: startNum.toFixed(1),
+      end: endNum.toFixed(1),
+      comments
+    });
+
+    updateTable();
+
+    document.getElementById("comments").value = "";
+  }
+
+  function updateTable() {
+    const body = document.getElementById("tableBody");
+    body.innerHTML = "";
+
+    annotations.forEach((a, index) => {
+      const row = document.createElement("tr");
+      const escapedComments = escapeHTML(a.comments);
+
+      row.innerHTML = `
+        <td>${escapeHTML(a.action)}</td>
+        <td>${a.start}</td>
+        <td>${a.end}</td>
+        <td style="text-align: left; max-width: 200px; overflow: hidden; text-overflow: ellipsis;" title="${escapedComments}">${escapedComments}</td>
+        <td><button onclick="deleteAnnotation(${index})">Delete</button></td>
+      `;
+      body.appendChild(row);
+    });
+  }
+
+  function deleteAnnotation(index) {
+    if (confirm("Delete this annotation?")) {
+      annotations.splice(index, 1);
+      updateTable();
+    }
+  }
+
+  function escapeHTML(str) {
+    const div = document.createElement('div');
+    div.textContent = str ?? "";
+    return div.innerHTML;
+  }
+
+  function escapeCSV(str) {
+    str = String(str ?? "");
+    if (str.includes(',') || str.includes('\n') || str.includes('"')) {
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
+  }
+
+  function downloadCSV() {
+    let csv = "action,start_time,end_time,comments\n";
+    annotations.forEach(a => {
+      csv += `${escapeCSV(a.action)},${a.start},${a.end},${escapeCSV(a.comments)}\n`;
+    });
+
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+
+    const filename = currentVideoBasename ? `${currentVideoBasename}.csv` : "annotations.csv";
+    link.download = filename;
+    link.click();
+
+    URL.revokeObjectURL(url);
+  }
+
+  document.addEventListener("keydown", e => {
+    const tag = e.target.tagName;
+    if (e.code === "Space" && tag !== "TEXTAREA" && tag !== "INPUT" && tag !== "SELECT") {
+      e.preventDefault();
+      video.paused ? video.play() : video.pause();
+    }
+  });
+
+  document.addEventListener("keydown", e => {
+    const tag = e.target.tagName;
+    if (tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT") return;
+
+    if (e.code === "ArrowLeft") {
+      e.preventDefault();
+      skipBackward();
+    } else if (e.code === "ArrowRight") {
+      e.preventDefault();
+      skipForward();
+    }
+  });
+
+  document.getElementById("newCategory").addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addCategory();
+    }
+  });
+
+  initActions();
+  initPlaybackSpeeds();
+</script>
+
+</body>
+</html>

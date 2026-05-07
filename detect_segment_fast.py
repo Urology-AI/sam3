@@ -16,6 +16,7 @@ Run:
   python3 detect_segment_fast.py
 """
 
+import bisect
 import os, sys, shutil, subprocess, tempfile, time
 import cv2
 import numpy as np
@@ -57,7 +58,7 @@ FRAME_STEP        = 3      # propagate every Nth frame; hold last mask for skipp
 WARMUP_CHUNKS     = 1      # first N chunks trigger torch.compile JIT; not counted in timing
 MAX_CHUNKS        = 10     # limit to first N chunks for benchmarking (None = all)
 ENCODE_BATCH_SIZE = 8      # frames per ViT forward pass during pre-encoding
-MASK_ALPHA        = 0.35
+MASK_ALPHA        = 0.15
 MASK_COLOR_BGR    = (0, 255, 0)
 BOX_COLOR_BGR     = (0, 0, 255)
 
@@ -435,33 +436,54 @@ def main():
     torch.cuda.empty_cache()
     print(f"\n  Done: {mask_count} masks in {time.time()-t0:.1f}s")
 
-    # ── [6] Render overlay (hold last mask for skipped frames) ────────────
-    print("\n[6] Rendering overlay video...")
+    # ── [6] Render overlay (linear mask interpolation between keyframes) ─────
+    print("\n[6] Rendering overlay video (linear mask interpolation)...")
+
+    # Pre-load every saved keyframe mask as float32 [0, 1]
+    keyframe_masks = {}
+    for fname in sorted(os.listdir(masks_dir)):
+        if fname.endswith(".npy"):
+            fidx_k = int(os.path.splitext(fname)[0])
+            m = np.load(os.path.join(masks_dir, fname)).astype(np.float32)
+            if m.shape[:2] != (h_vid, w_vid):
+                m = cv2.resize(m, (w_vid, h_vid), interpolation=cv2.INTER_NEAREST)
+            keyframe_masks[fidx_k] = m
+    kf_idxs = sorted(keyframe_masks.keys())
+    print(f"  {len(kf_idxs)} keyframe masks loaded")
+
+    def get_mask_at(fidx):
+        """Return linearly interpolated float mask at frame fidx."""
+        if not kf_idxs:
+            return None
+        pos = bisect.bisect_left(kf_idxs, fidx)
+        if pos == len(kf_idxs):
+            return keyframe_masks[kf_idxs[-1]]
+        if pos == 0 or kf_idxs[pos] == fidx:
+            return keyframe_masks[kf_idxs[pos]]
+        prev_idx = kf_idxs[pos - 1]
+        next_idx = kf_idxs[pos]
+        alpha = (fidx - prev_idx) / (next_idx - prev_idx)
+        return (1.0 - alpha) * keyframe_masks[prev_idx] + alpha * keyframe_masks[next_idx]
+
     out_raw  = os.path.join(OUTPUT_DIR, "_raw_overlay.mp4")
     out_path = os.path.join(OUTPUT_DIR, "overlay.mp4")
     writer   = cv2.VideoWriter(
         out_raw, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w_vid, h_vid),
     )
-    cap       = cv2.VideoCapture(VIDEO_CLIP)
-    last_mask = None
-    t0        = time.time()
+    cap          = cv2.VideoCapture(VIDEO_CLIP)
+    color_layer  = np.full((h_vid, w_vid, 3), MASK_COLOR_BGR, dtype=np.float32)
+    t0           = time.time()
 
     for fidx in range(n_frames):
         ret, frame = cap.read()
         if not ret:
             break
 
-        npy = os.path.join(masks_dir, f"{fidx:06d}.npy")
-        if os.path.exists(npy):
-            m = np.load(npy)
-            if m.shape[:2] != (h_vid, w_vid):
-                m = cv2.resize(m, (w_vid, h_vid), interpolation=cv2.INTER_NEAREST)
-            last_mask = m
-
-        if last_mask is not None and last_mask.any():
-            overlay = frame.copy()
-            overlay[last_mask.astype(bool)] = MASK_COLOR_BGR
-            frame = cv2.addWeighted(frame, 1 - MASK_ALPHA, overlay, MASK_ALPHA, 0)
+        mask_f = get_mask_at(fidx)
+        if mask_f is not None:
+            # Per-pixel alpha blend: interpolated mask weight × global MASK_ALPHA
+            alpha_map = (mask_f * MASK_ALPHA)[:, :, None]   # (H, W, 1)
+            frame = (frame * (1.0 - alpha_map) + color_layer * alpha_map).astype(np.uint8)
 
         for cs, (box_abs, conf) in reinit_log.items():
             if cs <= fidx < cs + box_dur:
@@ -498,8 +520,8 @@ def main():
     print(f"  Frames:    {n_frames} @ {fps:.1f} fps")
     print(f"  Chunks:    {len(chunk_starts)}  (reinit every {REINIT_INTERVAL/fps:.1f}s, "
           f"warmup={WARMUP_CHUNKS})")
-    print(f"  Step:      {FRAME_STEP}  ({mask_count} masks computed, "
-          f"{n_frames - mask_count} held from last)")
+    print(f"  Step:      {FRAME_STEP}  ({mask_count} keyframe masks, "
+          f"{n_frames - mask_count} frames linearly interpolated)")
     print(f"  Inference: {infer_time_s:.2f}s for {video_dur_s:.1f}s of video  "
           f"({video_dur_s / infer_time_s:.2f}× real-time)")
     print(f"  Output:    {out_path}")

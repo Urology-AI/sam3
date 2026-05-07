@@ -206,10 +206,12 @@ Thread 4 (CPU, async)  : SAM3 detector reinit every 150 frames (non-blocking)
 ---
 
 ### Phase 8 — Throughput Optimization
-Baseline ~16 fps on H100. `torch.compile mode="default"` brought this to ~22 fps. Frame-skipping (FRAME_STEP=3) benchmarked in `detect_segment_fast.py`.
+Baseline ~16 fps on H100. `torch.compile mode="default"` brought this to ~22 fps. Frame-skipping (FRAME_STEP=3) + batch pre-encoding of the ViT brought this to **1.18× real-time** (19.06s for 22.5s @ 59.9 fps, H100).
 
 **Key bottleneck:** SAM2 maskmem is autoregressive — hard sequential dependency, free VRAM cannot help. GPU is latency-bound.
 
-**Highest-leverage remaining optimization:** Batch pre-encode all chunk frames through the ViT before calling `propagate_in_video`. The ViT has zero temporal dependency — all frames can be encoded in one pass and pre-populated into `inference_state["cached_features"]`. Current cache is a single-entry dict (cache miss on every frame during propagation).
+**Batch pre-encoding (`pre_encode_chunk` in `detect_segment_fast.py`):** The ViT image encoder has zero temporal dependency — all chunk frames are encoded in batches of 8 before `propagate_in_video` starts. The maskmem loop hits `inference_state["cached_features"]` on every frame and never calls `forward_image`. Previously the cache was a single-entry dict (cache miss on every frame during propagation).
 
-**Remaining:** batch pre-encoding, `max-autotune`, Flash Attention 3 + FP8, multi-video parallelism. Reference: `facebookresearch/sam3` commit `9f22cb9`.
+**Linear mask interpolation (`detect_segment_fast.py`, rendering step):** With FRAME_STEP=3 only every 3rd frame has a computed mask. Rather than holding the last mask as a static overlay for skipped frames, the renderer linearly interpolates between consecutive keyframe masks. Per-pixel float alpha gives smooth transitions instead of hard cuts every 3 frames. Pre-saved `.npy` keyframe masks are reusable — alpha and interpolation can be changed without rerunning the GPU pipeline (`rerender_overlay.py`).
+
+**Remaining:** `max-autotune`, Flash Attention 3 + FP8, multi-video parallelism. Reference: `facebookresearch/sam3` commit `9f22cb9`.

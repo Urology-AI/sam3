@@ -114,6 +114,34 @@ from the propagation critical path. All chunk frames are encoded in batches of 8
 
 ---
 
+## Streaming / Real-Time Roadmap
+
+Batch pre-encoding does not transfer to streaming — frame N+1 hasn't arrived when frame N
+is being processed, so there is nothing to batch ahead of time. The ViT cost returns per frame.
+
+**Irreducible constraint:** maskmem is autoregressive. Frame N's memory token must be written
+before frame N+1 can start. This is a hard sequential dependency regardless of parallelism.
+
+**Options ranked by impact:**
+
+| Option | Mechanism | Status |
+|--------|-----------|--------|
+| **CUDA stream pipelining** | Encode frame N+1 on GPU stream 1 while maskmem runs frame N on stream 2. H100 has enough SMs for both concurrently. `cached_features` is the handoff — encode writes, maskmem reads. Hides ViT cost almost entirely. | Not implemented |
+| **Async detector reinit** | SAM3 detector runs in a background thread every ~2.5s. Maskmem loop never stalls waiting for the new box. | Not implemented |
+| **Frame skipping** | FRAME_STEP=5/6 — immediate throughput gain, masks go staler. | Config change |
+| **max-autotune + FA3+FP8** | ~40% free throughput from Meta's upstream commit. | Not implemented |
+| **SAM2-base for propagation** | Smaller maskmem model, faster per step, modest quality impact. | Not implemented |
+
+**Target streaming architecture:**
+```
+Thread 1 (CPU)         : decode frame → preprocess
+Thread 2 (GPU stream 1): ViT encode → write to cached_features
+Thread 3 (GPU stream 2): maskmem read cached_features → propagate → emit mask
+Thread 4 (CPU, async)  : SAM3 detector reinit every 150 frames (non-blocking)
+```
+
+---
+
 ## Environment
 
 - Platform: Arion HPC (Linux, LSF)

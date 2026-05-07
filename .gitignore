@@ -170,3 +170,6 @@ zero_shot_detections/
 
 # Experiment outputs (large binary outputs, not source)
 experiments/
+
+# Scratch / rough work
+rough/

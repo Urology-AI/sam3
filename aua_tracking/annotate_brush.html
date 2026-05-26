@@ -1,0 +1,1344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Surgical Nerve Mask Annotator</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #0e0e0e;
+  color: #d4d4d4;
+  font-family: Consolas, Menlo, monospace;
+  font-size: 13px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 7px 14px;
+  background: #161616;
+  border-bottom: 1px solid #2a2a2a;
+  flex-shrink: 0;
+}
+
+#topbar h1 {
+  font-size: 13px;
+  color: #fff;
+  white-space: nowrap;
+}
+
+#fileInput {
+  color: #888;
+  font-size: 12px;
+  max-width: 220px;
+}
+
+#fpsWrap {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #666;
+  font-size: 12px;
+}
+
+#fpsInput {
+  width: 52px;
+  padding: 2px 5px;
+  background: #222;
+  border: 1px solid #3a3a3a;
+  color: #ccc;
+  border-radius: 3px;
+}
+
+#videoName {
+  flex: 1;
+  color: #4fc3f7;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+#videoPanel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  background: #000;
+  overflow: hidden;
+  min-width: 0;
+}
+
+#videoWrap {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#videoEl {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+}
+
+.canvasLayer {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+#overlayCanvas {
+  pointer-events: none;
+}
+
+#drawCanvas {
+  pointer-events: none;
+  cursor: crosshair;
+}
+
+#controls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  background: #161616;
+  border-top: 1px solid #222;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+#frameDisplay {
+  color: #777;
+  font-size: 12px;
+  min-width: 210px;
+}
+
+.sep {
+  width: 1px;
+  height: 18px;
+  background: #2a2a2a;
+  flex-shrink: 0;
+}
+
+button {
+  padding: 4px 10px;
+  background: #222;
+  color: #bbb;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+button:hover { background: #2e2e2e; }
+button:disabled { opacity: 0.35; cursor: default; }
+
+button.active {
+  background: #1a4d2a;
+  border-color: #2e7d44;
+  color: #6ee892;
+}
+
+button.primary {
+  background: #1a3a5a;
+  border-color: #2e5f8a;
+  color: #7ab8f5;
+}
+
+button.danger {
+  background: #3a1414;
+  border-color: #6a2828;
+  color: #f08080;
+}
+
+button.warn {
+  background: #3a2a10;
+  border-color: #7a5520;
+  color: #f0b060;
+}
+
+.toolWrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #777;
+  font-size: 12px;
+}
+
+.toolWrap input[type="range"] {
+  width: 90px;
+}
+
+.toolWrap input[type="color"] {
+  width: 34px;
+  height: 24px;
+  padding: 1px;
+  background: #222;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+}
+
+#seekWrap {
+  min-width: 260px;
+  flex: 1;
+}
+
+#seekSlider {
+  width: 100%;
+}
+
+#sidebar {
+  width: 330px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: #131313;
+  border-left: 1px solid #222;
+  overflow: hidden;
+}
+
+#sidebarTop {
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid #222;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#sidebarTop span {
+  color: #888;
+  font-size: 12px;
+}
+
+#newTrackForm {
+  background: #1a1a1a;
+  border-bottom: 1px solid #2a2a2a;
+  padding: 10px 12px;
+  flex-shrink: 0;
+  display: none;
+}
+
+#newTrackForm.open {
+  display: block;
+}
+
+#newTrackForm label {
+  display: block;
+  color: #888;
+  font-size: 11px;
+  margin-bottom: 3px;
+}
+
+#newTrackForm input[type=text] {
+  width: 100%;
+  padding: 5px 8px;
+  background: #222;
+  border: 1px solid #3a3a3a;
+  color: #ddd;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.form-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#colorPicker {
+  width: 36px;
+  height: 28px;
+  padding: 1px;
+  border: 1px solid #3a3a3a;
+  background: #222;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.form-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.form-actions button {
+  flex: 1;
+}
+
+#trackList {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 8px;
+}
+
+.track-card {
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-left: 3px solid transparent;
+  border-radius: 5px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+
+.track-card:hover {
+  background: #202020;
+}
+
+.track-card.active-track {
+  background: #181e1a;
+  box-shadow: 0 0 0 1px rgba(100,220,130,0.25);
+}
+
+.tc-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 4px;
+}
+
+.tc-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tc-label {
+  flex: 1;
+  color: #e0e0e0;
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tc-del {
+  padding: 1px 5px;
+  font-size: 10px;
+  background: #2a1414;
+  border-color: #5a2a2a;
+  color: #e07070;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.tc-meta {
+  font-size: 11px;
+  color: #666;
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+
+.tc-meta .hi {
+  color: #aaa;
+}
+
+.tc-active-badge {
+  display: inline-block;
+  font-size: 10px;
+  color: #6ee892;
+  background: #1a3a22;
+  border: 1px solid #2a5a32;
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 4px;
+}
+
+.tc-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.tc-actions button {
+  flex: 1;
+  font-size: 11px;
+  padding: 3px 6px;
+}
+
+#exportStrip {
+  padding: 8px 12px;
+  border-top: 1px solid #222;
+  flex-shrink: 0;
+}
+
+#exportStrip button {
+  width: 100%;
+  padding: 7px;
+}
+
+#hint {
+  padding: 5px 12px;
+  font-size: 11px;
+  color: #444;
+  border-top: 1px solid #1a1a1a;
+  flex-shrink: 0;
+  line-height: 1.6;
+}
+
+#hint b {
+  color: #666;
+}
+
+#hiddenMaskCanvas {
+  display: none;
+}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>Surgical Nerve Mask Annotator</h1>
+  <input type="file" id="fileInput" accept="video/*">
+  <div id="fpsWrap">FPS <input type="number" id="fpsInput" value="30" min="1" max="120"></div>
+  <span id="videoName">— no video loaded —</span>
+</div>
+
+<div id="main">
+
+  <div id="videoPanel">
+    <div id="videoWrap">
+      <video id="videoEl" preload="auto"></video>
+      <canvas id="overlayCanvas" class="canvasLayer"></canvas>
+      <canvas id="drawCanvas" class="canvasLayer"></canvas>
+      <canvas id="hiddenMaskCanvas"></canvas>
+    </div>
+
+    <div id="controls">
+      <span id="frameDisplay">Frame — | —</span>
+
+      <div class="sep"></div>
+
+      <div id="seekWrap" class="toolWrap">
+        Seek
+        <input
+          id="seekSlider"
+          type="range"
+          min="0"
+          max="0"
+          step="1"
+          value="0"
+          oninput="seekToFrameFromSlider()"
+        >
+      </div>
+
+      <div class="sep"></div>
+
+      <button id="playBtn" onclick="togglePlay()">▶ Play</button>
+      <button onclick="stepFrame(-1)">◀ 1f</button>
+      <button onclick="stepFrame(1)">1f ▶</button>
+      <button onclick="stepFrame(-10)">◀ 10f</button>
+      <button onclick="stepFrame(10)">10f ▶</button>
+
+      <div class="sep"></div>
+
+      <button id="brushBtn" onclick="setTool('brush')" class="active">✏ Brush</button>
+      <button id="eraserBtn" onclick="setTool('eraser')">⌫ Eraser</button>
+
+      <div class="toolWrap">
+        Size
+        <input id="brushSize" type="range" min="1" max="80" value="18" oninput="updateToolLabels()">
+        <span id="brushSizeLabel">18</span>
+      </div>
+
+      <div class="toolWrap">
+        Alpha
+        <input id="alphaInput" type="range" min="0.05" max="1" step="0.05" value="0.35" oninput="redrawAll()">
+        <span id="alphaLabel">0.35</span>
+      </div>
+
+      <div class="toolWrap">
+        Overlay
+        <input id="overlayColorInput" type="color" value="#4fc3f7" onchange="updateActiveColorFromToolbar()">
+      </div>
+
+      <div class="sep"></div>
+
+      <button id="drawModeBtn" onclick="toggleDrawMode()" disabled>Draw Mask <small>(M)</small></button>
+      <button id="saveMaskBtn" onclick="saveMaskKeyframe()" disabled class="primary">Save Mask Keyframe <small>(S)</small></button>
+      <button onclick="clearDraftMask()" class="danger">Clear Draft</button>
+      <button onclick="undoDraftMask()">Undo</button>
+      <button id="endBtn" onclick="endTrackHere()" disabled class="warn">End Track Here <small>(E)</small></button>
+    </div>
+  </div>
+
+  <div id="sidebar">
+    <div id="sidebarTop">
+      <span>Structures &nbsp;<b id="trackCount" style="color:#aaa">0</b></span>
+      <button class="primary" onclick="toggleNewForm()">+ New Structure</button>
+    </div>
+
+    <div id="newTrackForm">
+      <label>Structure name</label>
+      <input type="text" id="newLabelInput" placeholder="e.g. Left nerve bundle" autocomplete="off">
+
+      <div class="form-row">
+        <div>
+          <label>Colour</label>
+          <input type="color" id="colorPicker" value="#4fc3f7">
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="primary" onclick="createTrack()">Create</button>
+        <button onclick="toggleNewForm()">Cancel</button>
+      </div>
+    </div>
+
+    <div id="trackList">
+      <div style="color:#333; text-align:center; margin-top:40px; line-height:1.8">
+        No structures yet.<br>
+        Click <b style="color:#555">+ New Structure</b> to begin.
+      </div>
+    </div>
+
+    <div id="exportStrip">
+      <button class="primary" onclick="exportJSON()">⬇ Export Mask Annotations JSON</button>
+    </div>
+
+    <div id="hint">
+      <b>Space</b> play/pause · <b>← →</b> step · <b>M</b> draw mode ·
+      <b>S</b> save mask · <b>E</b> end track · <b>N</b> new · <b>Esc</b> stop drawing
+    </div>
+  </div>
+</div>
+
+<script>
+const video = document.getElementById('videoEl');
+
+const overlayCanvas = document.getElementById('overlayCanvas');
+const overlayCtx = overlayCanvas.getContext('2d');
+
+const drawCanvas = document.getElementById('drawCanvas');
+const drawCtx = drawCanvas.getContext('2d');
+
+const hiddenMaskCanvas = document.getElementById('hiddenMaskCanvas');
+const hiddenMaskCtx = hiddenMaskCanvas.getContext('2d');
+
+let tracks = [];
+let activeId = null;
+let nextId = 0;
+let videoName = '';
+
+let drawMode = false;
+let drawing = false;
+let currentTool = 'brush';
+let lastPoint = null;
+
+let undoStack = [];
+let maskImageCache = new Map();
+
+const PALETTE = [
+  '#4fc3f7', '#81c784', '#ffb74d', '#f48fb1',
+  '#ce93d8', '#80cbc4', '#a5d6a7', '#ff8a65'
+];
+let paletteIdx = 0;
+
+document.getElementById('fileInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  videoName = file.name;
+  document.getElementById('videoName').textContent = file.name;
+  video.src = URL.createObjectURL(file);
+  video.load();
+});
+
+video.addEventListener('loadedmetadata', () => {
+  syncCanvases();
+
+  hiddenMaskCanvas.width = video.videoWidth || 1;
+  hiddenMaskCanvas.height = video.videoHeight || 1;
+
+  updateSeekSliderRange();
+  updateSeekSliderValue();
+  clearDraftMask();
+});
+
+video.addEventListener('loadeddata', () => setTimeout(syncCanvases, 60));
+window.addEventListener('resize', syncCanvases);
+
+function syncCanvases() {
+  const left = video.offsetLeft + 'px';
+  const top = video.offsetTop + 'px';
+  const w = video.clientWidth || 1;
+  const h = video.clientHeight || 1;
+
+  overlayCanvas.style.left = left;
+  overlayCanvas.style.top = top;
+  overlayCanvas.width = w;
+  overlayCanvas.height = h;
+
+  drawCanvas.style.left = left;
+  drawCanvas.style.top = top;
+  drawCanvas.width = w;
+  drawCanvas.height = h;
+
+  redrawAll();
+}
+
+function getFps() {
+  return parseFloat(document.getElementById('fpsInput').value) || 30;
+}
+
+function currentFrame() {
+  return Math.round(video.currentTime * getFps());
+}
+
+function totalFrames() {
+  if (!video.duration || !getFps()) return 0;
+  return Math.max(0, Math.floor(video.duration * getFps()));
+}
+
+function updateSeekSliderRange() {
+  const slider = document.getElementById('seekSlider');
+  if (!slider) return;
+
+  slider.max = totalFrames();
+  slider.value = currentFrame();
+}
+
+function updateSeekSliderValue() {
+  const slider = document.getElementById('seekSlider');
+  if (!slider) return;
+
+  if (document.activeElement === slider) return;
+
+  slider.value = currentFrame();
+}
+
+function seekToFrameFromSlider() {
+  const slider = document.getElementById('seekSlider');
+  if (!slider) return;
+
+  video.pause();
+
+  const frame = parseInt(slider.value, 10) || 0;
+  video.currentTime = frame / getFps();
+
+  const f = currentFrame();
+  const t = video.currentTime.toFixed(2);
+  document.getElementById('frameDisplay').textContent = `Frame ${f} | ${t}s`;
+
+  redrawAll();
+}
+
+document.getElementById('fpsInput').addEventListener('change', () => {
+  updateSeekSliderRange();
+  updateSeekSliderValue();
+  redrawAll();
+});
+
+function togglePlay() {
+  video.paused ? video.play() : video.pause();
+}
+
+video.addEventListener('play', () => {
+  document.getElementById('playBtn').textContent = '⏸ Pause';
+});
+
+video.addEventListener('pause', () => {
+  document.getElementById('playBtn').textContent = '▶ Play';
+});
+
+function stepFrame(delta) {
+  video.pause();
+
+  const fps = getFps();
+  const next = video.currentTime + delta / fps;
+
+  video.currentTime = Math.max(0, Math.min(video.duration || 0, next));
+
+  updateSeekSliderValue();
+}
+
+video.addEventListener('timeupdate', () => {
+  const f = currentFrame();
+  const t = video.currentTime.toFixed(2);
+  document.getElementById('frameDisplay').textContent = `Frame ${f} | ${t}s`;
+
+  updateSeekSliderValue();
+  redrawAll();
+});
+
+function toggleNewForm() {
+  const form = document.getElementById('newTrackForm');
+  const open = form.classList.toggle('open');
+
+  if (open) {
+    const color = PALETTE[paletteIdx % PALETTE.length];
+    document.getElementById('colorPicker').value = color;
+    document.getElementById('newLabelInput').value = '';
+    setTimeout(() => document.getElementById('newLabelInput').focus(), 50);
+  }
+}
+
+function createTrack() {
+  const label = document.getElementById('newLabelInput').value.trim();
+  if (!label) {
+    document.getElementById('newLabelInput').focus();
+    return;
+  }
+
+  const color = document.getElementById('colorPicker').value;
+  paletteIdx++;
+
+  const track = {
+    id: nextId++,
+    label,
+    color,
+    startFrame: null,
+    startTime: null,
+    endFrame: null,
+    endTime: null,
+    masks: []
+  };
+
+  tracks.push(track);
+  activeId = track.id;
+
+  document.getElementById('overlayColorInput').value = color;
+  document.getElementById('newTrackForm').classList.remove('open');
+
+  clearDraftMask();
+  updateControls();
+  renderSidebar();
+  redrawAll();
+}
+
+function activeTrack() {
+  return tracks.find(t => t.id === activeId) || null;
+}
+
+function activateTrack(id) {
+  stopDrawingOnly();
+  activeId = id;
+
+  const t = activeTrack();
+  if (t) {
+    document.getElementById('overlayColorInput').value = t.color;
+  }
+
+  clearDraftMask();
+  updateControls();
+  renderSidebar();
+  redrawAll();
+}
+
+function deleteTrack(e, id) {
+  e.stopPropagation();
+
+  if (!confirm('Delete this structure and all mask keyframes?')) return;
+
+  tracks = tracks.filter(t => t.id !== id);
+
+  if (activeId === id) {
+    activeId = tracks.length ? tracks[tracks.length - 1].id : null;
+  }
+
+  clearDraftMask();
+  updateControls();
+  renderSidebar();
+  redrawAll();
+}
+
+function updateControls() {
+  const hasActive = !!activeTrack();
+
+  document.getElementById('drawModeBtn').disabled = !hasActive;
+  document.getElementById('saveMaskBtn').disabled = !hasActive;
+  document.getElementById('endBtn').disabled = !hasActive;
+}
+
+function updateToolLabels() {
+  document.getElementById('brushSizeLabel').textContent =
+    document.getElementById('brushSize').value;
+
+  document.getElementById('alphaLabel').textContent =
+    parseFloat(document.getElementById('alphaInput').value).toFixed(2);
+}
+
+function setTool(tool) {
+  currentTool = tool;
+
+  document.getElementById('brushBtn').classList.toggle('active', tool === 'brush');
+  document.getElementById('eraserBtn').classList.toggle('active', tool === 'eraser');
+}
+
+function updateActiveColorFromToolbar() {
+  const t = activeTrack();
+  if (!t) return;
+
+  t.color = document.getElementById('overlayColorInput').value;
+  renderSidebar();
+  redrawAll();
+}
+
+function toggleDrawMode() {
+  if (!activeTrack()) return;
+
+  drawMode = !drawMode;
+  video.pause();
+
+  document.getElementById('drawModeBtn').classList.toggle('active', drawMode);
+  drawCanvas.style.pointerEvents = drawMode ? 'auto' : 'none';
+  drawCanvas.style.cursor = drawMode ? 'crosshair' : 'default';
+}
+
+function stopDrawingOnly() {
+  drawMode = false;
+  drawing = false;
+  lastPoint = null;
+
+  document.getElementById('drawModeBtn').classList.remove('active');
+  drawCanvas.style.pointerEvents = 'none';
+}
+
+function getCanvasPoint(e) {
+  const r = drawCanvas.getBoundingClientRect();
+
+  const displayX = e.clientX - r.left;
+  const displayY = e.clientY - r.top;
+
+  const videoX = displayX * (video.videoWidth / drawCanvas.width);
+  const videoY = displayY * (video.videoHeight / drawCanvas.height);
+
+  return { displayX, displayY, videoX, videoY };
+}
+
+function pushUndo() {
+  if (!video.videoWidth) return;
+
+  try {
+    undoStack.push(hiddenMaskCtx.getImageData(
+      0, 0, hiddenMaskCanvas.width, hiddenMaskCanvas.height
+    ));
+
+    if (undoStack.length > 25) {
+      undoStack.shift();
+    }
+  } catch (err) {
+    console.warn('Undo snapshot failed:', err);
+  }
+}
+
+drawCanvas.addEventListener('mousedown', e => {
+  if (!drawMode || !activeTrack()) return;
+
+  drawing = true;
+  lastPoint = getCanvasPoint(e);
+  pushUndo();
+  drawDot(lastPoint);
+});
+
+drawCanvas.addEventListener('mousemove', e => {
+  if (!drawing || !drawMode) return;
+
+  const p = getCanvasPoint(e);
+  drawLine(lastPoint, p);
+  lastPoint = p;
+});
+
+window.addEventListener('mouseup', () => {
+  drawing = false;
+  lastPoint = null;
+});
+
+function getBrushSizeVideo() {
+  const sizeDisplay = parseFloat(document.getElementById('brushSize').value) || 18;
+  const sx = video.videoWidth / drawCanvas.width;
+  const sy = video.videoHeight / drawCanvas.height;
+  return sizeDisplay * Math.max(sx, sy);
+}
+
+function drawDot(p) {
+  const sizeDisplay = parseFloat(document.getElementById('brushSize').value) || 18;
+  const sizeVideo = getBrushSizeVideo();
+
+  const t = activeTrack();
+  const color = t ? t.color : '#4fc3f7';
+  const alpha = parseFloat(document.getElementById('alphaInput').value) || 0.35;
+
+  drawCtx.save();
+  drawCtx.globalCompositeOperation = currentTool === 'eraser' ? 'destination-out' : 'source-over';
+  drawCtx.globalAlpha = currentTool === 'eraser' ? 1 : alpha;
+  drawCtx.fillStyle = color;
+  drawCtx.beginPath();
+  drawCtx.arc(p.displayX, p.displayY, sizeDisplay / 2, 0, Math.PI * 2);
+  drawCtx.fill();
+  drawCtx.restore();
+
+  hiddenMaskCtx.save();
+  hiddenMaskCtx.globalCompositeOperation = currentTool === 'eraser' ? 'destination-out' : 'source-over';
+  hiddenMaskCtx.fillStyle = 'rgba(255,255,255,1)';
+  hiddenMaskCtx.beginPath();
+  hiddenMaskCtx.arc(p.videoX, p.videoY, sizeVideo / 2, 0, Math.PI * 2);
+  hiddenMaskCtx.fill();
+  hiddenMaskCtx.restore();
+}
+
+function drawLine(a, b) {
+  const sizeDisplay = parseFloat(document.getElementById('brushSize').value) || 18;
+  const sizeVideo = getBrushSizeVideo();
+
+  const t = activeTrack();
+  const color = t ? t.color : '#4fc3f7';
+  const alpha = parseFloat(document.getElementById('alphaInput').value) || 0.35;
+
+  drawCtx.save();
+  drawCtx.globalCompositeOperation = currentTool === 'eraser' ? 'destination-out' : 'source-over';
+  drawCtx.globalAlpha = currentTool === 'eraser' ? 1 : alpha;
+  drawCtx.strokeStyle = color;
+  drawCtx.lineWidth = sizeDisplay;
+  drawCtx.lineCap = 'round';
+  drawCtx.lineJoin = 'round';
+  drawCtx.beginPath();
+  drawCtx.moveTo(a.displayX, a.displayY);
+  drawCtx.lineTo(b.displayX, b.displayY);
+  drawCtx.stroke();
+  drawCtx.restore();
+
+  hiddenMaskCtx.save();
+  hiddenMaskCtx.globalCompositeOperation = currentTool === 'eraser' ? 'destination-out' : 'source-over';
+  hiddenMaskCtx.strokeStyle = 'rgba(255,255,255,1)';
+  hiddenMaskCtx.lineWidth = sizeVideo;
+  hiddenMaskCtx.lineCap = 'round';
+  hiddenMaskCtx.lineJoin = 'round';
+  hiddenMaskCtx.beginPath();
+  hiddenMaskCtx.moveTo(a.videoX, a.videoY);
+  hiddenMaskCtx.lineTo(b.videoX, b.videoY);
+  hiddenMaskCtx.stroke();
+  hiddenMaskCtx.restore();
+}
+
+function clearDraftMask() {
+  drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+
+  if (hiddenMaskCanvas.width && hiddenMaskCanvas.height) {
+    hiddenMaskCtx.clearRect(0, 0, hiddenMaskCanvas.width, hiddenMaskCanvas.height);
+  }
+
+  undoStack = [];
+}
+
+function undoDraftMask() {
+  if (!undoStack.length) return;
+
+  const previous = undoStack.pop();
+  hiddenMaskCtx.putImageData(previous, 0, 0);
+
+  redrawDraftFromHiddenMask();
+}
+
+function redrawDraftFromHiddenMask() {
+  drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+
+  const t = activeTrack();
+  if (!t) return;
+
+  const alpha = parseFloat(document.getElementById('alphaInput').value) || 0.35;
+
+  const tmp = document.createElement('canvas');
+  tmp.width = drawCanvas.width;
+  tmp.height = drawCanvas.height;
+  const tmpCtx = tmp.getContext('2d');
+
+  tmpCtx.drawImage(hiddenMaskCanvas, 0, 0, drawCanvas.width, drawCanvas.height);
+  tmpCtx.globalCompositeOperation = 'source-in';
+  tmpCtx.fillStyle = t.color;
+  tmpCtx.fillRect(0, 0, tmp.width, tmp.height);
+
+  drawCtx.save();
+  drawCtx.globalAlpha = alpha;
+  drawCtx.drawImage(tmp, 0, 0);
+  drawCtx.restore();
+}
+
+function hasDraftMask() {
+  if (!hiddenMaskCanvas.width || !hiddenMaskCanvas.height) return false;
+
+  const img = hiddenMaskCtx.getImageData(
+    0, 0, hiddenMaskCanvas.width, hiddenMaskCanvas.height
+  );
+
+  for (let i = 3; i < img.data.length; i += 4) {
+    if (img.data[i] > 0) return true;
+  }
+
+  return false;
+}
+
+function computeMaskBBox() {
+  const w = hiddenMaskCanvas.width;
+  const h = hiddenMaskCanvas.height;
+
+  const img = hiddenMaskCtx.getImageData(0, 0, w, h);
+
+  let minX = w;
+  let minY = h;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const a = img.data[(y * w + x) * 4 + 3];
+      if (a > 0) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  if (maxX < 0) return null;
+
+  return [minX, minY, maxX + 1, maxY + 1];
+}
+
+function saveMaskKeyframe() {
+  const t = activeTrack();
+  if (!t) return;
+
+  if (!hasDraftMask()) {
+    alert('Draw a mask first, then save the mask keyframe.');
+    return;
+  }
+
+  const f = currentFrame();
+  const timeS = parseFloat(video.currentTime.toFixed(3));
+  const maskPng = hiddenMaskCanvas.toDataURL('image/png');
+  const bbox = computeMaskBBox();
+
+  t.masks = t.masks.filter(m => m.frame !== f);
+
+  t.masks.push({
+    frame: f,
+    time_s: timeS,
+    mask_png: maskPng,
+    bbox
+  });
+
+  t.masks.sort((a, b) => a.frame - b.frame);
+
+  if (t.startFrame === null || f < t.startFrame) {
+    t.startFrame = f;
+    t.startTime = timeS;
+  }
+
+  if (t.endFrame === null || f > t.endFrame) {
+    t.endFrame = f;
+    t.endTime = timeS;
+  }
+
+  maskImageCache.delete(cacheKey(t.id, f));
+
+  clearDraftMask();
+  stopDrawingOnly();
+  renderSidebar();
+  redrawAll();
+}
+
+function endTrackHere() {
+  const t = activeTrack();
+  if (!t) return;
+
+  if (!t.masks.length) {
+    alert('Save at least one mask keyframe before ending the track.');
+    return;
+  }
+
+  t.endFrame = currentFrame();
+  t.endTime = parseFloat(video.currentTime.toFixed(3));
+
+  renderSidebar();
+  redrawAll();
+}
+
+function cacheKey(trackId, frame) {
+  return `${trackId}:${frame}`;
+}
+
+function getMaskImage(track, maskEntry) {
+  const key = cacheKey(track.id, maskEntry.frame);
+
+  if (maskImageCache.has(key)) {
+    return maskImageCache.get(key);
+  }
+
+  const img = new Image();
+  img.onload = () => redrawAll();
+  img.src = maskEntry.mask_png;
+
+  maskImageCache.set(key, img);
+  return img;
+}
+
+function getPreviewMaskForTrack(track, frame) {
+  if (!track.masks.length) return null;
+
+  const sorted = track.masks.slice().sort((a, b) => a.frame - b.frame);
+  let candidate = null;
+
+  for (const m of sorted) {
+    if (m.frame <= frame) candidate = m;
+    else break;
+  }
+
+  return candidate || sorted[0];
+}
+
+function drawTintedMask(ctx, img, color, alpha) {
+  if (!img.complete) return;
+
+  const tmp = document.createElement('canvas');
+  tmp.width = overlayCanvas.width;
+  tmp.height = overlayCanvas.height;
+  const tmpCtx = tmp.getContext('2d');
+
+  tmpCtx.drawImage(img, 0, 0, overlayCanvas.width, overlayCanvas.height);
+  tmpCtx.globalCompositeOperation = 'source-in';
+  tmpCtx.fillStyle = color;
+  tmpCtx.fillRect(0, 0, tmp.width, tmp.height);
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(tmp, 0, 0);
+  ctx.restore();
+}
+
+function redrawAll() {
+  updateToolLabels();
+
+  overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+  if (!video.videoWidth) return;
+
+  const f = currentFrame();
+  const alpha = parseFloat(document.getElementById('alphaInput').value) || 0.35;
+
+  for (const t of tracks) {
+    if (!t.masks.length) continue;
+
+    const inRange =
+      (t.startFrame === null || f >= t.startFrame) &&
+      (t.endFrame === null || f <= t.endFrame);
+
+    if (!inRange) continue;
+
+    const m = getPreviewMaskForTrack(t, f);
+    if (!m) continue;
+
+    const img = getMaskImage(t, m);
+    drawTintedMask(overlayCtx, img, t.color, t.id === activeId ? alpha : alpha * 0.55);
+
+    if (m.frame === f && m.bbox) {
+      const sx = overlayCanvas.width / video.videoWidth;
+      const sy = overlayCanvas.height / video.videoHeight;
+      const [x1, y1, x2, y2] = m.bbox;
+
+      overlayCtx.save();
+      overlayCtx.strokeStyle = t.color;
+      overlayCtx.lineWidth = t.id === activeId ? 2.5 : 1.5;
+      overlayCtx.setLineDash([]);
+      overlayCtx.strokeRect(
+        x1 * sx,
+        y1 * sy,
+        (x2 - x1) * sx,
+        (y2 - y1) * sy
+      );
+
+      overlayCtx.font = '11px Consolas, monospace';
+      const tag = `${t.label} f${m.frame}`;
+      const tw = overlayCtx.measureText(tag).width;
+      const tx = x1 * sx;
+      const ty = Math.max(14, y1 * sy - 4);
+
+      overlayCtx.fillStyle = 'rgba(0,0,0,0.65)';
+      overlayCtx.fillRect(tx, ty - 12, tw + 8, 15);
+      overlayCtx.fillStyle = t.color;
+      overlayCtx.fillText(tag, tx + 4, ty);
+      overlayCtx.restore();
+    }
+  }
+}
+
+function renderSidebar() {
+  document.getElementById('trackCount').textContent = tracks.length;
+  const list = document.getElementById('trackList');
+
+  if (!tracks.length) {
+    list.innerHTML = `
+      <div style="color:#333; text-align:center; margin-top:40px; line-height:1.8">
+        No structures yet.<br>
+        Click <b style="color:#555">+ New Structure</b> to begin.
+      </div>`;
+    return;
+  }
+
+  list.innerHTML = '';
+
+  for (const t of tracks) {
+    const isActive = t.id === activeId;
+    const startDisp = t.startFrame !== null ? `f${t.startFrame}` : '—';
+    const endDisp = t.endFrame !== null ? `f${t.endFrame}` : '?';
+
+    const div = document.createElement('div');
+    div.className = 'track-card' + (isActive ? ' active-track' : '');
+    div.style.borderLeftColor = t.color;
+    div.onclick = () => activateTrack(t.id);
+
+    div.innerHTML = `
+      <div class="tc-header">
+        <span class="tc-dot" style="background:${t.color}"></span>
+        <span class="tc-label">${escapeHtml(t.label)}</span>
+        ${isActive ? '<span class="tc-active-badge">active</span>' : ''}
+        <button class="tc-del" onclick="deleteTrack(event, ${t.id})">✕</button>
+      </div>
+
+      <div class="tc-meta">
+        <span class="hi">${startDisp} → ${endDisp}</span><br>
+        ${t.masks.length} mask keyframe${t.masks.length !== 1 ? 's' : ''}
+        ${t.masks.length ? ` · frames: ${t.masks.map(m => m.frame).join(', ')}` : ''}
+      </div>
+
+      <div class="tc-actions">
+        ${
+          !isActive
+            ? `<button onclick="activateTrack(${t.id}); event.stopPropagation()">Activate</button>`
+            : `<button class="active" onclick="event.stopPropagation()">Active ✓</button>`
+        }
+        <button class="warn" onclick="activateTrack(${t.id}); endTrackHere(); event.stopPropagation()">End Here</button>
+      </div>`;
+
+    list.appendChild(div);
+  }
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  })[c]);
+}
+
+function exportJSON() {
+  if (!tracks.length) {
+    alert('No structures to export.');
+    return;
+  }
+
+  const noMasks = tracks.filter(t => !t.masks.length);
+  if (noMasks.length) {
+    if (!confirm(`${noMasks.length} structure(s) have no mask keyframes. Export anyway?`)) {
+      return;
+    }
+  }
+
+  const payload = {
+    annotation_type: 'mask_keyframes',
+    video: videoName,
+    fps: getFps(),
+    video_w: video.videoWidth,
+    video_h: video.videoHeight,
+    tracks: tracks.map(t => ({
+      id: t.id,
+      label: t.label,
+      color: t.color,
+      start_frame: t.startFrame,
+      start_time_s: t.startTime,
+      end_frame: t.endFrame,
+      end_time_s: t.endTime,
+      masks: t.masks.map(m => ({
+        frame: m.frame,
+        time_s: m.time_s,
+        bbox: m.bbox,
+        mask_png: m.mask_png
+      }))
+    }))
+  };
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: 'application/json'
+  });
+
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  const stem = videoName ? videoName.replace(/\.[^.]+$/, '') : 'annotation';
+  a.download = `${stem}_mask_tracks.json`;
+  a.click();
+}
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+
+  switch (e.key) {
+    case ' ':
+      e.preventDefault();
+      togglePlay();
+      break;
+
+    case 'ArrowLeft':
+      e.preventDefault();
+      stepFrame(e.shiftKey ? -10 : -1);
+      break;
+
+    case 'ArrowRight':
+      e.preventDefault();
+      stepFrame(e.shiftKey ? 10 : 1);
+      break;
+
+    case 'm':
+    case 'M':
+      toggleDrawMode();
+      break;
+
+    case 's':
+    case 'S':
+      saveMaskKeyframe();
+      break;
+
+    case 'e':
+    case 'E':
+      endTrackHere();
+      break;
+
+    case 'n':
+    case 'N':
+      toggleNewForm();
+      break;
+
+    case 'Escape':
+      stopDrawingOnly();
+      break;
+  }
+});
+
+updateToolLabels();
+</script>
+</body>
+</html>

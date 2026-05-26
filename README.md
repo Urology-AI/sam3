@@ -1,7 +1,8 @@
-# Prostate Segmentation — Custom Pipeline
+# Surgical Anatomy Segmentation — Custom Pipeline
 
-This branch adds prostate gland segmentation and tracking for robotic surgery video (RARP)
-on top of the base SAM3 codebase. See `README_SAM3.md` for the upstream SAM3 documentation.
+This branch adds automatic segmentation and tracking of surgical anatomy (prostate gland,
+vas deferens) in robotic surgery video (RARP) on top of the base SAM3 codebase.
+See `README_SAM3.md` for the upstream SAM3 documentation.
 
 ---
 
@@ -23,25 +24,34 @@ reinitialises the tracker, preventing long-term drift.
 
 | Script | Purpose |
 |--------|---------|
-| `infer_prostate.py` | **Full pipeline** — detector → decoder → tracker, chunked |
-| `train_detector.py` | Fine-tune SAM3 detector head on prostate data |
+| `infer_prostate.py` | Full pipeline — detector → decoder → tracker, chunked |
+| `infer_prostate_bidir.py` | Same but propagates bidirectionally from an anchor frame |
+| `infer_vas.sh` | Single-clip VAS deferens inference (wraps `infer_prostate_bidir.py`) |
+| `infer_vas_batch.sh` | Batch VAS inference over a list of clips from `untitled.txt` |
+| `train_detector.py` | Fine-tune SAM3 detector head on any structure |
 | `train_sam2_decoder.py` | Fine-tune SAM2 mask decoder with noisy-box augmentation |
-| `detect_segment_fast.py` | infer_prostate.py + torch.compile + FRAME_STEP=3 skipping |
-| `benchmark_sam2large.py` | FPS + IoU benchmark: full vs partial propagation |
+| `detect_segment_fast.py` | Fast prostate pipeline: torch.compile + FRAME_STEP=3 + batch pre-encoding |
 | `masks_to_coco.py` | Convert binary mask PNGs to COCO JSON for detector training |
-| `annotation_server.py` | Interactive annotation server (brush/click interface) |
+| `aua_tracking/` | Browser annotation tools + SAM2 tracking scripts for AUA presentation |
 
 ---
 
 ## Checkpoints
 
-| Model | Val IoU | Path |
-|-------|---------|------|
-| SAM3 fine-tuned detector | 0.907 | `detector_training/checkpoints/20260428_0942/checkpoint_best.pth` |
-| SAM2 noise-robust decoder | 0.919 | `sam2_decoder_training/checkpoints/20260504_1506/checkpoint_best.pth` |
+| Model | Target | Val IoU | Path |
+|-------|--------|---------|------|
+| SAM3 fine-tuned detector | Prostate | 0.907 | `detector_training/checkpoints/20260428_0942/checkpoint_best.pth` |
+| SAM2 noise-robust decoder | Prostate | 0.919 | `sam2_decoder_training/checkpoints/20260504_1506/checkpoint_best.pth` |
+| SAM3 fine-tuned detector | VAS deferens | — | `detector_training/checkpoints/20260522_1403/checkpoint_best.pth` |
+| SAM2 noise-robust decoder | VAS deferens | — | `sam2_decoder_training/checkpoints/20260522_1448/checkpoint_best.pth` |
 
-> Checkpoint files (`.pth`) are gitignored. Store them on the HPC filesystem or a separate
-> artifact store.
+> Checkpoint files (`.pth`) are gitignored. Store on the HPC filesystem or a separate artifact store.
+
+> **Text token:** Both detectors are queried with `"prostate gland"` at inference — including
+> the VAS model. The CLIP language backbone is frozen during training, so the text embedding
+> is a fixed class label, not a semantic description. The detector learns to associate that
+> fixed vector with whichever structure appears in the training data. Passing `"vas deferens"`
+> at inference would produce a different CLIP vector and break the trained association.
 
 ---
 
@@ -215,3 +225,13 @@ Baseline ~16 fps on H100. `torch.compile mode="default"` brought this to ~22 fps
 **Linear mask interpolation (`detect_segment_fast.py`, rendering step):** With FRAME_STEP=3 only every 3rd frame has a computed mask. Rather than holding the last mask as a static overlay for skipped frames, the renderer linearly interpolates between consecutive keyframe masks. Per-pixel float alpha gives smooth transitions instead of hard cuts every 3 frames. Pre-saved `.npy` keyframe masks are reusable — alpha and interpolation can be changed without rerunning the GPU pipeline (`rerender_overlay.py`).
 
 **Remaining:** `max-autotune`, Flash Attention 3 + FP8, multi-video parallelism. Reference: `facebookresearch/sam3` commit `9f22cb9`.
+
+---
+
+### Phase 9 — VAS Deferens Detector + AUA Tracking Toolkit
+
+**VAS deferens detector:** Trained a second SAM3 detector on vas deferens annotations using the same architecture and training procedure as the prostate detector. The text query at inference is `"prostate gland"` — identical to the prostate model. The CLIP language backbone is frozen, so the text embedding is just a fixed class label; the model learns to associate it with whatever structure appears in the annotations. Swapping the query string at inference time would break the trained association.
+
+Inference: `infer_prostate_bidir.py` propagates bidirectionally from a detected anchor frame (forward + backward without `reverse=True`, using `ReverseVideoChunkLoader` for the backward pass). `infer_vas.sh` wraps this for a single clip; `infer_vas_batch.sh` iterates over the clip list in `intuitive_videos/untitled.txt`.
+
+**AUA tracking toolkit (`aua_tracking/`):** Browser-based annotation tools and SAM2 propagation scripts consolidated for the AUA presentation. Covers three workflows: brush-mask tracking (nerve bundles), single-instance box tracking (VAS/seminals/retrotrigonal), and simultaneous multi-instance box tracking (both VAS at once, both seminals at once). See `aua_tracking/README.md` for full documentation.

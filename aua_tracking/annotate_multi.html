@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Surgical Structure Annotator</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #0e0e0e;
+  color: #d4d4d4;
+  font-family: 'Consolas', 'Menlo', monospace;
+  font-size: 13px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Top bar ── */
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 7px 14px;
+  background: #161616;
+  border-bottom: 1px solid #2a2a2a;
+  flex-shrink: 0;
+}
+#topbar h1 { font-size: 13px; font-weight: 600; color: #fff; white-space: nowrap; }
+#fileInput { color: #888; font-size: 12px; max-width: 200px; }
+#fpsWrap { display: flex; align-items: center; gap: 5px; color: #666; font-size: 12px; }
+#fpsInput { width: 46px; padding: 2px 5px; background: #222; border: 1px solid #3a3a3a; color: #ccc; border-radius: 3px; }
+#videoName { flex: 1; color: #4fc3f7; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Layout ── */
+#main { display: flex; flex: 1; overflow: hidden; }
+
+/* ── Video panel ── */
+#videoPanel { display: flex; flex-direction: column; flex: 1; overflow: hidden; background: #000; min-width: 0; }
+
+#videoWrap {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#videoEl { max-width: 100%; max-height: 100%; display: block; }
+#overlayCanvas { position: absolute; top: 0; left: 0; pointer-events: none; }
+
+/* ── Controls ── */
+#controls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  background: #161616;
+  border-top: 1px solid #222;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+#frameDisplay { color: #777; font-size: 12px; min-width: 190px; }
+.sep { width: 1px; height: 18px; background: #2a2a2a; flex-shrink: 0; }
+
+button {
+  padding: 4px 10px;
+  background: #222;
+  color: #bbb;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  transition: background 0.1s;
+}
+button:hover { background: #2e2e2e; }
+button:disabled { opacity: 0.35; cursor: default; }
+button.active { background: #1a4d2a; border-color: #2e7d44; color: #6ee892; }
+button.danger  { background: #3a1414; border-color: #6a2828; color: #f08080; }
+button.primary { background: #1a3a5a; border-color: #2e5f8a; color: #7ab8f5; }
+button.end-btn { background: #3a2a10; border-color: #7a5520; color: #f0b060; }
+
+/* ── Sidebar ── */
+#sidebar {
+  width: 290px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: #131313;
+  border-left: 1px solid #222;
+  overflow: hidden;
+}
+
+#sidebarTop {
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid #222;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+#sidebarTop span { color: #888; font-size: 12px; }
+
+/* New track form */
+#newTrackForm {
+  background: #1a1a1a;
+  border-bottom: 1px solid #2a2a2a;
+  padding: 10px 12px;
+  flex-shrink: 0;
+  display: none;
+}
+#newTrackForm.open { display: block; }
+#newTrackForm label { display: block; color: #888; font-size: 11px; margin-bottom: 3px; }
+#newTrackForm input[type=text] {
+  width: 100%;
+  padding: 5px 8px;
+  background: #222;
+  border: 1px solid #3a3a3a;
+  color: #ddd;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+#newTrackForm input[type=text]:focus { outline: none; border-color: #4fc3f7; }
+.form-row { display: flex; align-items: center; gap: 8px; }
+#colorPicker { width: 36px; height: 28px; padding: 1px; border: 1px solid #3a3a3a; background: #222; border-radius: 3px; cursor: pointer; }
+.form-actions { display: flex; gap: 6px; margin-top: 8px; }
+.form-actions button { flex: 1; }
+
+/* Track list */
+#trackList { flex: 1; overflow-y: auto; padding: 6px 8px; }
+#trackList::-webkit-scrollbar { width: 5px; }
+#trackList::-webkit-scrollbar-track { background: #111; }
+#trackList::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+
+.track-card {
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-left: 3px solid transparent;
+  border-radius: 5px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.track-card:hover { background: #202020; }
+.track-card.active-track {
+  background: #181e1a;
+  box-shadow: 0 0 0 1px rgba(100,220,130,0.25);
+}
+.track-card .tc-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 4px;
+}
+.tc-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.tc-label { flex: 1; color: #e0e0e0; font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-del { padding: 1px 5px; font-size: 10px; background: #2a1414; border-color: #5a2a2a; color: #e07070; border-radius: 3px; flex-shrink: 0; }
+.tc-del:hover { background: #3a1818; }
+.tc-meta { font-size: 11px; color: #666; margin-bottom: 6px; }
+.tc-meta .hi { color: #888; }
+.tc-active-badge { display: inline-block; font-size: 10px; color: #6ee892; background: #1a3a22; border: 1px solid #2a5a32; border-radius: 3px; padding: 1px 5px; margin-left: 4px; }
+.tc-actions { display: flex; gap: 5px; }
+.tc-actions button { flex: 1; font-size: 11px; padding: 3px 6px; }
+
+/* Export strip */
+#exportStrip {
+  padding: 8px 12px;
+  border-top: 1px solid #222;
+  flex-shrink: 0;
+}
+#exportStrip button { width: 100%; }
+
+/* Hint */
+#hint { padding: 5px 12px; font-size: 11px; color: #444; border-top: 1px solid #1a1a1a; flex-shrink: 0; line-height: 1.6; }
+#hint b { color: #666; }
+</style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div id="topbar">
+  <h1>Surgical Structure Annotator</h1>
+  <input type="file" id="fileInput" accept="video/*">
+  <div id="fpsWrap">FPS <input type="number" id="fpsInput" value="30" min="1" max="120"></div>
+  <span id="videoName">— no video loaded —</span>
+</div>
+
+<!-- Main -->
+<div id="main">
+
+  <!-- Video + controls -->
+  <div id="videoPanel">
+    <div id="videoWrap">
+      <video id="videoEl" preload="auto"></video>
+      <canvas id="overlayCanvas"></canvas>
+    </div>
+    <div id="controls">
+      <span id="frameDisplay">Frame — | —</span>
+      <div class="sep"></div>
+      <button id="playBtn" onclick="togglePlay()">▶ Play</button>
+      <button onclick="stepFrame(-1)">◀ 1f</button>
+      <button onclick="stepFrame(1)">1f ▶</button>
+      <button onclick="stepFrame(-10)">◀ 10f</button>
+      <button onclick="stepFrame(10)">10f ▶</button>
+      <div class="sep"></div>
+      <button id="drawBtn" onclick="toggleDraw()" disabled>✏ Draw Box &nbsp;<small>(B)</small></button>
+      <button id="endBtn" onclick="endTrackHere()" disabled class="end-btn">End Track Here &nbsp;<small>(E)</small></button>
+      <div class="sep"></div>
+      <button class="danger" onclick="cancelDraw()">✕ Cancel</button>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <div id="sidebar">
+    <div id="sidebarTop">
+      <span>Structures &nbsp;<b id="trackCount" style="color:#aaa">0</b></span>
+      <button class="primary" onclick="toggleNewForm()">+ New Structure</button>
+    </div>
+
+    <!-- New track form -->
+    <div id="newTrackForm">
+      <label>Structure name</label>
+      <input type="text" id="newLabelInput" placeholder="e.g. Seminal Vesicle — Left" autocomplete="off">
+      <div class="form-row">
+        <div>
+          <label>Colour</label>
+          <input type="color" id="colorPicker" value="#4fc3f7">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="primary" onclick="createTrack()">Create</button>
+        <button onclick="toggleNewForm()">Cancel</button>
+      </div>
+    </div>
+
+    <div id="trackList"><div style="color:#333; text-align:center; margin-top:40px; line-height:1.8">No structures yet.<br>Click <b style="color:#555">+ New Structure</b> to begin.</div></div>
+
+    <div id="exportStrip">
+      <button class="primary" onclick="exportJSON()" style="padding:7px">⬇ Export Annotations JSON</button>
+    </div>
+
+    <div id="hint">
+      <b>Space</b> play/pause &nbsp;·&nbsp; <b>← →</b> step &nbsp;·&nbsp;
+      <b>B</b> draw box &nbsp;·&nbsp; <b>E</b> end track &nbsp;·&nbsp;
+      <b>N</b> new structure &nbsp;·&nbsp; <b>Esc</b> cancel draw
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+const video   = document.getElementById('videoEl');
+const canvas  = document.getElementById('overlayCanvas');
+const ctx     = canvas.getContext('2d');
+
+let tracks      = [];      // [{id, label, color, startFrame, endFrame, boxes:[{frame,time_s,x1,y1,x2,y2}]}]
+let activeId    = null;
+let nextId      = 0;
+let drawMode    = false;
+let dragging    = false;
+let dragStart   = null;
+let dragCurrent = null;
+let videoName   = '';
+
+const PALETTE = ['#4fc3f7','#81c784','#ffb74d','#f48fb1','#ce93d8','#80cbc4','#a5d6a7','#ff8a65'];
+let paletteIdx = 0;
+
+// ── File load ──────────────────────────────────────────────────────────────────
+document.getElementById('fileInput').addEventListener('change', e => {
+  const file = e.target.files[0]; if (!file) return;
+  videoName = file.name;
+  document.getElementById('videoName').textContent = file.name;
+  video.src = URL.createObjectURL(file);
+  video.load();
+});
+
+video.addEventListener('loadeddata',    () => setTimeout(syncCanvas, 60));
+video.addEventListener('loadedmetadata', () => syncCanvas());
+window.addEventListener('resize',        () => syncCanvas());
+
+function syncCanvas() {
+  canvas.style.left   = video.offsetLeft + 'px';
+  canvas.style.top    = video.offsetTop  + 'px';
+  canvas.width        = video.clientWidth  || 1;
+  canvas.height       = video.clientHeight || 1;
+  redraw();
+}
+
+// ── Playback ───────────────────────────────────────────────────────────────────
+function togglePlay() { video.paused ? video.play() : video.pause(); }
+video.addEventListener('play',  () => { document.getElementById('playBtn').textContent = '⏸ Pause'; });
+video.addEventListener('pause', () => { document.getElementById('playBtn').textContent = '▶ Play'; });
+
+function getFps() { return parseFloat(document.getElementById('fpsInput').value) || 30; }
+function currentFrame() { return Math.round(video.currentTime * getFps()); }
+function stepFrame(d) {
+  video.pause();
+  video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + d / getFps()));
+}
+
+video.addEventListener('timeupdate', () => {
+  const f = currentFrame(), t = video.currentTime.toFixed(2);
+  document.getElementById('frameDisplay').textContent = `Frame ${f}  |  ${t}s`;
+  redraw();
+});
+
+// ── New track form ─────────────────────────────────────────────────────────────
+function toggleNewForm() {
+  const form = document.getElementById('newTrackForm');
+  const open = form.classList.toggle('open');
+  if (open) {
+    document.getElementById('colorPicker').value = PALETTE[paletteIdx % PALETTE.length];
+    document.getElementById('newLabelInput').value = '';
+    setTimeout(() => document.getElementById('newLabelInput').focus(), 50);
+  }
+}
+
+function createTrack() {
+  const label = document.getElementById('newLabelInput').value.trim();
+  if (!label) { document.getElementById('newLabelInput').focus(); return; }
+  const color = document.getElementById('colorPicker').value;
+  paletteIdx++;
+
+  const track = { id: nextId++, label, color, startFrame: null, endFrame: null, boxes: [] };
+  tracks.push(track);
+  activeId = track.id;
+  drawMode = false;
+
+  document.getElementById('newTrackForm').classList.remove('open');
+  updateDrawControls();
+  renderSidebar();
+  redraw();
+}
+
+// ── Track actions ──────────────────────────────────────────────────────────────
+function activateTrack(id) {
+  // Exit draw mode cleanly before switching
+  cancelDraw();
+  activeId = id;
+  updateDrawControls();
+  renderSidebar();
+  redraw();
+}
+
+function endTrackHere() {
+  const t = activeTrack(); if (!t) return;
+  if (t.boxes.length === 0) { alert('Draw at least one box before ending the track.'); return; }
+  t.endFrame = currentFrame();
+  t.endTime  = parseFloat(video.currentTime.toFixed(3));
+  cancelDraw();
+  renderSidebar();
+  redraw();
+}
+
+function deleteTrack(e, id) {
+  e.stopPropagation();
+  if (!confirm('Delete this structure and all its boxes?')) return;
+  tracks = tracks.filter(t => t.id !== id);
+  if (activeId === id) { activeId = tracks.length ? tracks[tracks.length-1].id : null; }
+  cancelDraw();
+  updateDrawControls();
+  renderSidebar();
+  redraw();
+}
+
+function activeTrack() { return tracks.find(t => t.id === activeId) || null; }
+
+// ── Draw mode ──────────────────────────────────────────────────────────────────
+function toggleDraw() {
+  if (!activeTrack()) return;
+  drawMode = !drawMode;
+  if (drawMode) { video.pause(); dragging = false; dragStart = dragCurrent = null; }
+  document.getElementById('drawBtn').classList.toggle('active', drawMode);
+  canvas.style.pointerEvents = drawMode ? 'auto' : 'none';
+  redraw();
+}
+
+function cancelDraw() {
+  drawMode = false; dragging = false; dragStart = dragCurrent = null;
+  document.getElementById('drawBtn').classList.remove('active');
+  canvas.style.pointerEvents = 'none';
+  redraw();
+}
+
+function updateDrawControls() {
+  const hasActive = !!activeTrack();
+  document.getElementById('drawBtn').disabled  = !hasActive;
+  document.getElementById('endBtn').disabled   = !hasActive;
+}
+
+// ── Mouse events ───────────────────────────────────────────────────────────────
+canvas.addEventListener('mousedown', e => {
+  if (!drawMode) return;
+  // Fresh start — clear any previous drag state
+  dragging = true;
+  dragStart   = clientToCanvas(e);
+  dragCurrent = { ...dragStart };
+});
+
+canvas.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  dragCurrent = clientToCanvas(e);
+  redraw();
+});
+
+canvas.addEventListener('mouseup', e => {
+  if (!dragging) return;
+  dragging    = false;
+  dragCurrent = clientToCanvas(e);
+
+  const x1c = Math.min(dragStart.x, dragCurrent.x);
+  const x2c = Math.max(dragStart.x, dragCurrent.x);
+  const y1c = Math.min(dragStart.y, dragCurrent.y);
+  const y2c = Math.max(dragStart.y, dragCurrent.y);
+
+  dragStart = dragCurrent = null; // flush drawing state immediately
+
+  if (x2c - x1c < 6 || y2c - y1c < 6) { redraw(); return; }
+
+  const sx = video.videoWidth  / canvas.width;
+  const sy = video.videoHeight / canvas.height;
+  const t  = activeTrack(); if (!t) { redraw(); return; }
+  const f  = currentFrame();
+
+  // Remove any existing box at this exact frame for this track (replace, don't duplicate)
+  t.boxes = t.boxes.filter(b => b.frame !== f);
+
+  t.boxes.push({
+    frame: f, time_s: parseFloat(video.currentTime.toFixed(3)),
+    x1: Math.round(x1c * sx), y1: Math.round(y1c * sy),
+    x2: Math.round(x2c * sx), y2: Math.round(y2c * sy),
+  });
+  t.boxes.sort((a, b) => a.frame - b.frame);
+
+  // Auto-set startFrame from first box
+  if (t.startFrame === null || f < t.startFrame) {
+    t.startFrame = f;
+    t.startTime  = parseFloat(video.currentTime.toFixed(3));
+  }
+
+  // Exit draw mode after placing each box so canvas is clean
+  drawMode = false;
+  document.getElementById('drawBtn').classList.remove('active');
+  canvas.style.pointerEvents = 'none';
+
+  renderSidebar();
+  redraw();
+});
+
+function clientToCanvas(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+// ── Canvas rendering ───────────────────────────────────────────────────────────
+function redraw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!video.videoWidth) return;
+
+  const scaleX = canvas.width  / video.videoWidth;
+  const scaleY = canvas.height / video.videoHeight;
+  const f = currentFrame();
+
+  tracks.forEach(t => {
+    const isActive = t.id === activeId;
+    const inRange  = (t.startFrame === null || f >= t.startFrame) &&
+                     (t.endFrame   === null || f <= t.endFrame);
+    if (!inRange && t.boxes.every(b => Math.abs(b.frame - f) > 90)) return;
+
+    t.boxes.forEach(b => {
+      const onFrame = b.frame === f;
+      const cx = b.x1 * scaleX, cy = b.y1 * scaleY;
+      const cw = (b.x2 - b.x1) * scaleX, ch = (b.y2 - b.y1) * scaleY;
+
+      ctx.globalAlpha = isActive ? 1.0 : 0.5;
+      ctx.lineWidth   = (isActive && onFrame) ? 2.5 : 1.5;
+      ctx.strokeStyle = t.color;
+      ctx.setLineDash(onFrame ? [] : [5, 4]);
+      ctx.strokeRect(cx, cy, cw, ch);
+      ctx.setLineDash([]);
+
+      // Label tag for the box at current frame
+      if (onFrame) {
+        const tag = t.label;
+        ctx.font = '11px Consolas, monospace';
+        const tw  = ctx.measureText(tag).width;
+        const lx  = cx;
+        const ly  = cy > 16 ? cy - 3 : cy + ch + 13;
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(lx, ly - 12, tw + 8, 15);
+        ctx.globalAlpha = 1.0;
+        ctx.fillStyle = t.color;
+        ctx.fillText(tag, lx + 4, ly);
+      }
+      ctx.globalAlpha = 1.0;
+    });
+  });
+
+  // Live drag rectangle
+  if (dragging && dragStart && dragCurrent) {
+    const x1 = Math.min(dragStart.x, dragCurrent.x);
+    const y1 = Math.min(dragStart.y, dragCurrent.y);
+    const w  = Math.abs(dragCurrent.x - dragStart.x);
+    const h  = Math.abs(dragCurrent.y - dragStart.y);
+    const at = activeTrack();
+    ctx.strokeStyle = at ? at.color : '#0ff';
+    ctx.lineWidth   = 2;
+    ctx.setLineDash([6, 3]);
+    ctx.strokeRect(x1, y1, w, h);
+    ctx.fillStyle = at ? hexToRgba(at.color, 0.07) : 'rgba(0,220,255,0.06)';
+    ctx.fillRect(x1, y1, w, h);
+    ctx.setLineDash([]);
+  }
+
+  // End-frame marker lines
+  tracks.forEach(t => {
+    if (t.endFrame !== null) {
+      const ex = t.endFrame * scaleX;
+      // We can't draw a timeline here but show end state in sidebar
+    }
+  });
+}
+
+function hexToRgba(hex, a) {
+  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+// ── Sidebar ────────────────────────────────────────────────────────────────────
+function renderSidebar() {
+  document.getElementById('trackCount').textContent = tracks.length;
+  const list = document.getElementById('trackList');
+
+  if (tracks.length === 0) {
+    list.innerHTML = '<div style="color:#333; text-align:center; margin-top:40px; line-height:1.8">No structures yet.<br>Click <b style="color:#555">+ New Structure</b> to begin.</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  tracks.forEach(t => {
+    const isActive  = t.id === activeId;
+    const complete  = t.endFrame !== null;
+    const startDisp = t.startFrame !== null ? `f${t.startFrame}` : '—';
+    const endDisp   = t.endFrame   !== null ? `f${t.endFrame}`   : '?';
+
+    const div = document.createElement('div');
+    div.className = 'track-card' + (isActive ? ' active-track' : '');
+    div.style.borderLeftColor = t.color;
+    div.onclick = () => activateTrack(t.id);
+
+    div.innerHTML = `
+      <div class="tc-header">
+        <span class="tc-dot" style="background:${t.color}"></span>
+        <span class="tc-label">${t.label}</span>
+        ${isActive ? '<span class="tc-active-badge">active</span>' : ''}
+        <button class="tc-del" onclick="deleteTrack(event,${t.id})">✕</button>
+      </div>
+      <div class="tc-meta">
+        <span class="hi">${startDisp} → ${endDisp}</span>
+        &nbsp;·&nbsp; ${t.boxes.length} box${t.boxes.length !== 1 ? 'es' : ''}
+        ${complete ? ' &nbsp;·&nbsp; <span style="color:#6ee892">✓ complete</span>' : ''}
+      </div>
+      <div class="tc-actions">
+        ${!isActive ? `<button onclick="activateTrack(${t.id});event.stopPropagation()">Activate</button>` : `<button class="active" onclick="event.stopPropagation()">Active ✓</button>`}
+        <button class="end-btn" onclick="activateTrack(${t.id});endTrackHere();event.stopPropagation()">
+          ${complete ? 'Update End' : 'End Here'}
+        </button>
+      </div>`;
+    list.appendChild(div);
+  });
+}
+
+// ── Export ─────────────────────────────────────────────────────────────────────
+function exportJSON() {
+  if (tracks.length === 0) { alert('No structures to export.'); return; }
+  const incomplete = tracks.filter(t => t.boxes.length === 0);
+  if (incomplete.length) {
+    if (!confirm(`${incomplete.length} structure(s) have no boxes. Export anyway?`)) return;
+  }
+
+  const payload = {
+    video:   videoName,
+    fps:     getFps(),
+    video_w: video.videoWidth,
+    video_h: video.videoHeight,
+    tracks: tracks.map(t => ({
+      id:          t.id,
+      label:       t.label,
+      color:       t.color,
+      start_frame: t.startFrame,
+      start_time_s: t.startTime || null,
+      end_frame:   t.endFrame,
+      end_time_s:  t.endTime   || null,
+      boxes: t.boxes.map(b => ({
+        frame:  b.frame,
+        time_s: b.time_s,
+        box:    [b.x1, b.y1, b.x2, b.y2],
+      })),
+    })),
+  };
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = (videoName.replace(/\.[^.]+$/, '') || 'annotation') + '_tracks.json';
+  a.click();
+}
+
+// ── Keyboard ───────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  switch (e.key) {
+    case ' ':         e.preventDefault(); togglePlay(); break;
+    case 'ArrowLeft': e.preventDefault(); stepFrame(e.shiftKey ? -10 : -1); break;
+    case 'ArrowRight':e.preventDefault(); stepFrame(e.shiftKey ?  10 :  1); break;
+    case 'b': case 'B': if (activeTrack()) toggleDraw(); break;
+    case 'e': case 'E': endTrackHere(); break;
+    case 'n': case 'N': toggleNewForm(); break;
+    case 'Escape':    cancelDraw(); break;
+    case 'Delete': case 'Backspace':
+      if (activeId !== null) deleteTrack({ stopPropagation: ()=>{} }, activeId);
+      break;
+  }
+});
+</script>
+</body>
+</html>

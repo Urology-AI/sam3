@@ -228,6 +228,74 @@ Baseline ~16 fps on H100. `torch.compile mode="default"` brought this to ~22 fps
 
 ---
 
+---
+
+## Nerve-Sparing Phase Localisation
+
+> **Note:** This is a standalone research project. It is maintained in this repository for practical reasons — the HPC environment and SAM2 installation are already set up here, and the pipeline uses the SAM2 frozen encoder as its feature extractor.
+
+### Clinical Motivation
+
+The nerve-sparing phase of a robotic prostatectomy (RARP) is roughly 20–30 minutes within a 2–3 hour surgery. Analysing patient outcomes from the full video is impractical — the goal is to automatically extract just that window.
+
+The nerve-sparing phase is bounded by two surgical events:
+- **Start:** VAS deferens cutting (the bilateral division of the vas marks the entry into the nerve-sparing dissection). An earlier alternative start is the catheter pull following the anterior bladder-neck incision — both timestamps are available in `intuitive_videos/annotate_fine.csv`.
+- **End:** Endobagging (the prostate is placed into a laparoscopic bag for extraction). This marks the completion of the dissection.
+
+### Confidence-Sweep Baseline (failed)
+
+As a first attempt, the trained VAS deferens detector was run across every sampled frame of the full surgery to see if its box confidence peaked during VAS cutting. The resulting trace (`vas_confidence_sweep.png`) showed no clean spike. The detector fires on tubular structures throughout the surgery and is not phase-gated — it cannot distinguish "VAS being cut now" from "VAS is incidentally visible".
+
+![VAS confidence sweep](vas_confidence_sweep.png)
+
+### Embedding-Based Approach
+
+Since the SAM2 image encoder (Hiera-L ViT) is entirely frozen and demonstrably produces features sufficient for pixel-level VAS segmentation, those same features must encode enough signal to classify whether a frame belongs to the VAS-cutting phase. The encoder has never been updated — it generalises across all phases of the surgery.
+
+**Pipeline (identical for both events):**
+
+```
+extract_*_features.py   — sample frames → SAM2 forward_image → avg+max pool FPN coarse scales → .npz
+train_*_classifier.py   — LOCO-CV with logistic regression on the saved features
+localize_*.py           — full-video inference → rolling-mean smoothing → pick highest-confidence segment
+```
+
+Feature extraction: the finest FPN scale is discarded (local texture, not useful for phase detection). For the two remaining coarser scales, average and max pooling are concatenated — average captures mean activation, max captures whether a feature is present anywhere in the frame. Final feature vector: **1024-d** (2 scales × 2 pooling modes × 256 channels).
+
+Annotations for VAS cutting: `intuitive_videos/untitled.txt`.
+Annotations for all events including endobagging: `intuitive_videos/annotate_fine.csv`.
+
+### Results
+
+**VAS cutting localisation:** within 1–2 minutes of the true event across held-out cases.
+
+**Endobagging localisation (7 cases, LOCO-CV):**
+
+| Case | GT start | Selected | Start error | Within 3 min |
+|------|----------|----------|-------------|--------------|
+| 213 | 4093s (68.2m) | 4096s | +3s | ✓ |
+| 214 | 3159s (52.6m) | 3304s | +145s | ✓ |
+| 219 | 2632s (43.9m) | 2244s | −388s | ✗ |
+| 220 | 3382s (56.4m) | 3380s | −2s | ✓ |
+| 222 | 4742s (79.0m) | 4868s | +126s | ✓ |
+| 245 | 5501s (91.7m) | 486s | −5015s | ✗ |
+| 246 | 5096s (84.9m) | 5108s | +12s | ✓ |
+
+**5/7 (71%) within 3 minutes.** The two failures are cases where a visually similar scene earlier in the surgery scores higher confidence than the true endobagging window — more training cases expected to resolve this.
+
+### Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `extract_vas_features.py` | SAM2 feature extraction for VAS cutting frames |
+| `train_vas_classifier.py` | LOCO-CV classifier evaluation for VAS |
+| `localize_vas.py` | Full-video VAS event localisation |
+| `extract_endobag_features.py` | SAM2 feature extraction for endobagging frames |
+| `train_endobag_classifier.py` | LOCO-CV classifier evaluation for endobagging |
+| `localize_endobag.py` | Full-video endobagging event localisation |
+
+---
+
 ### Phase 9 — VAS Deferens Detector + AUA Tracking Toolkit
 
 **VAS deferens detector:** Trained a second SAM3 detector on vas deferens annotations using the same architecture and training procedure as the prostate detector. The text query at inference is `"prostate gland"` — identical to the prostate model. The CLIP language backbone is frozen, so the text embedding is just a fixed class label; the model learns to associate it with whatever structure appears in the annotations. Swapping the query string at inference time would break the trained association.

@@ -387,6 +387,33 @@ So far only `endobag` and `vas_cut` have been swept across all annotated cases; 
 
 **6/7 (86%) within 3 minutes.** Median error 28s, mean 156s. For comparison, Hiera-L on the same protocol was 5/7 with median 126s, mean 813s — the smaller backbone gives both higher hit rate and ~5× tighter localisation. The remaining failure (case 245) is a structurally similar earlier scene scoring higher than the true endobag; since endobagging is by definition the last sustained event in the surgery, switching `pick_best_segment` to "latest segment above threshold" is the next mitigation.
 
+### Future direction: hard-negative mining from post-event field asymmetry
+
+Several phases share a useful structural property: the surgical field looks **dramatically different** after the event ends than before it began. This asymmetry is a stronger signal than the event itself and can be exploited to sharpen the prediction boundary — specifically the *end* boundary, which is what matters clinically.
+
+**Why ENDs matter more than STARTs for these phases.** The start of most dissection-type events is gradual: the surgeon may approach the structure, retract, peek, and adjust for a minute or more before committing to the cut. Any frame in that ~1-minute preamble could plausibly be labelled "event starting" — it is intrinsically ambiguous. The *end* is unambiguous: the structure is either transected, freed, or extracted. Optimising for sharp end-boundary prediction is the right objective; start-time error is dominated by inherent annotation noise.
+
+**Per-phase post-event visual signatures (strong hard negatives):**
+
+| Phase | After the event ends |
+|---|---|
+| `endobag`        | Prostate no longer visible; pelvic cavity is empty of the specimen |
+| `apical_cut`     | Prostate cut loose and mobile; apical anatomy fundamentally changed |
+| `catheter_pull`  | Catheter cleanly visible and static, no longer being drawn through tissue |
+| `posterior_cut`  | Posterior plane fully developed; prostate floats free of rectum |
+| `vas_cut_*`      | Cut end of VAS visible; characteristic stump pattern |
+
+For `catheter_pull` specifically the temporal pattern is also asymmetric in a useful way: *during* the pull the field is constantly changing (catheter length in view varies frame to frame) while *after* the pull the catheter is fully visible and static. Both pre-pull (no catheter) and post-pull (static catheter) are negatives, but they look different from each other and from the dynamic pull itself.
+
+**Mining strategy (to be implemented):**
+The current `build_sample_plan` in `extract_endobag_features.py` draws negatives uniformly across all non-event frames. For events with strong post-event signatures, this underweights the most discriminating negatives. The proposed change:
+
+1. For each annotated event, define a post-event window of length comparable to the event itself (e.g. `end_sec` to `end_sec + 60s`).
+2. Oversample negatives from this window (e.g. 50% of all negatives drawn from post-event windows, 50% drawn uniformly from elsewhere).
+3. Expect the classifier to learn a sharper decision boundary specifically around the event *end*, which directly improves `pick_best_segment` accuracy for the end timestamp.
+
+This complements the "pick latest segment above threshold" mitigation noted above for endobag: that heuristic exploits a temporal prior in post-processing, while hard-negative mining tightens the probability trace itself.
+
 ### Scripts
 
 | Script | Purpose |

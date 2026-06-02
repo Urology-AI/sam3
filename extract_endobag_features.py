@@ -33,7 +33,6 @@ SAM3_DIR    = os.path.dirname(os.path.abspath(__file__))
 SAM2_DIR    = "/sc/arion/projects/video_rarp/neel_projects/autosam-instruments-GraSP-trained/sam2"
 VIDEO_DIR   = "/sc/arion/projects/video_rarp/neel_projects/intuitive_videos"
 ANNOT_CSV   = os.path.join(VIDEO_DIR, "annotate_fine.csv")
-OUT_DIR_DEFAULT = os.path.join(SAM3_DIR, "endobag_features")
 
 sys.path.insert(0, SAM3_DIR)
 sys.path.insert(0, SAM2_DIR)
@@ -58,10 +57,10 @@ IMG_STD   = torch.tensor([0.229, 0.224, 0.225])[:, None, None]
 
 # ── Parsing ────────────────────────────────────────────────────────────────────
 
-def parse_endobag_annotations(path):
+def parse_event_annotations(path, event_name):
     """
     Returns dict: case_id (str) → list of (start_s, end_s) tuples.
-    Reads annotate_fine.csv and filters rows where event == "endobag".
+    Reads annotate_fine.csv and filters rows where event == `event_name`.
     case_id is extracted from filename: "case_213_clipped.mp4" → "213".
     start_sec / end_sec columns are already in seconds (integers).
     """
@@ -69,7 +68,7 @@ def parse_endobag_annotations(path):
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            if row["event"].strip() != "endobag":
+            if row["event"].strip() != event_name:
                 continue
             # "case_213_clipped.mp4" → "213"
             fname = row["filename"].strip()
@@ -121,16 +120,16 @@ def extract_batch(model, frames_t, device):
 
 # ── Sampling ───────────────────────────────────────────────────────────────────
 
-def build_sample_plan(total_frames, fps, endobag_windows, sample_fps, neg_ratio):
+def build_sample_plan(total_frames, fps, event_windows, sample_fps, neg_ratio):
     stride = max(1, int(round(fps / sample_fps)))
 
-    def in_endobag(frame_idx):
+    def in_window(frame_idx):
         t = frame_idx / fps
-        return any(s <= t <= e for s, e in endobag_windows)
+        return any(s <= t <= e for s, e in event_windows)
 
     all_frames = np.arange(0, total_frames, stride)
-    pos_frames = [fi for fi in all_frames if     in_endobag(fi)]
-    neg_frames = [fi for fi in all_frames if not in_endobag(fi)]
+    pos_frames = [fi for fi in all_frames if     in_window(fi)]
+    neg_frames = [fi for fi in all_frames if not in_window(fi)]
 
     n_neg_target = int(len(pos_frames) * neg_ratio)
     if len(neg_frames) > n_neg_target:
@@ -145,7 +144,7 @@ def build_sample_plan(total_frames, fps, endobag_windows, sample_fps, neg_ratio)
 
 # ── Per-case pipeline ──────────────────────────────────────────────────────────
 
-def process_case(case_id, endobag_windows, model, args, device):
+def process_case(case_id, event_windows, model, args, device):
     video_path = os.path.join(VIDEO_DIR, f"case_{case_id}_clipped.mp4")
     if not os.path.exists(video_path):
         print(f"  SKIP: video not found → {video_path}")
@@ -157,7 +156,7 @@ def process_case(case_id, endobag_windows, model, args, device):
     cap.release()
 
     frame_indices, labels = build_sample_plan(
-        total_frames, fps, endobag_windows, args.sample_fps, args.neg_ratio
+        total_frames, fps, event_windows, args.sample_fps, args.neg_ratio
     )
     n_pos = int(labels.sum())
     n_neg = int((1 - labels).sum())
@@ -220,8 +219,13 @@ def process_case(case_id, endobag_windows, model, args, device):
 
 def parse_args():
     p = argparse.ArgumentParser()
+    p.add_argument("--event",       default="endobag",
+                   help="Which event column value to localise "
+                        "(any of: endobag, vas_cut_1, vas_cut_2, catheter_pull, "
+                        "apical_cut, posterior_cut, seminal_peeling — see annotate_fine.csv)")
     p.add_argument("--annot_csv",   default=ANNOT_CSV)
-    p.add_argument("--out_dir",     default=OUT_DIR_DEFAULT)
+    p.add_argument("--out_dir",     default=None,
+                   help="Defaults to <sam3>/<event>_features/")
     p.add_argument("--sample_fps",  type=float, default=1.0)
     p.add_argument("--neg_ratio",   type=float, default=4.0)
     p.add_argument("--batch_size",  type=int,   default=8)
@@ -237,6 +241,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.out_dir is None:
+        args.out_dir = os.path.join(SAM3_DIR, f"{args.event}_features")
     os.makedirs(args.out_dir, exist_ok=True)
     assert torch.cuda.is_available(), "CUDA required"
     device = torch.device("cuda")
@@ -244,8 +250,12 @@ def main():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32       = True
     print(f"GPU: {torch.cuda.get_device_name(0)}")
+    print(f"Event: {args.event}")
 
-    windows = parse_endobag_annotations(args.annot_csv)
+    windows = parse_event_annotations(args.annot_csv, args.event)
+    if not windows:
+        print(f"\nNo annotations found for event='{args.event}' in {args.annot_csv}.")
+        return
     if args.cases:
         keep = set(args.cases.split(","))
         windows = {k: v for k, v in windows.items() if k in keep}
@@ -256,10 +266,10 @@ def main():
 
     model = load_sam2(args.sam2_variant, device)
 
-    for case_id, endobag_windows in tqdm(sorted(windows.items()),
-                                         desc="Cases", unit="case", ncols=80):
-        print(f"\n[case {case_id}]  endobag windows: {endobag_windows}")
-        process_case(case_id, endobag_windows, model, args, device)
+    for case_id, event_windows in tqdm(sorted(windows.items()),
+                                       desc="Cases", unit="case", ncols=80):
+        print(f"\n[case {case_id}]  {args.event} windows: {event_windows}")
+        process_case(case_id, event_windows, model, args, device)
 
     print(f"\nDone. Features saved to {args.out_dir}/")
 

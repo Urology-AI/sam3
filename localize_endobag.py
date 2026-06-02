@@ -37,8 +37,6 @@ SAM3_DIR     = os.path.dirname(os.path.abspath(__file__))
 SAM2_DIR     = "/sc/arion/projects/video_rarp/neel_projects/autosam-instruments-GraSP-trained/sam2"
 VIDEO_DIR    = "/sc/arion/projects/video_rarp/neel_projects/intuitive_videos"
 ANNOT_CSV    = os.path.join(VIDEO_DIR, "annotate_fine.csv")
-FEATURES_DIR = os.path.join(SAM3_DIR, "endobag_features")
-OUT_DIR      = os.path.join(SAM3_DIR, "endobag_localization")
 
 sys.path.insert(0, SAM3_DIR)
 sys.path.insert(0, SAM2_DIR)
@@ -70,17 +68,17 @@ IMG_STD   = torch.tensor([0.229, 0.224, 0.225])[:, None, None]
 
 # ── Parsing ────────────────────────────────────────────────────────────────────
 
-def parse_endobag_annotations(path):
+def parse_event_annotations(path, event_name):
     """
     Returns dict: case_id (str) → list of (start_s, end_s) tuples.
-    Reads annotate_fine.csv, filters event == "endobag".
+    Reads annotate_fine.csv, filters event == `event_name`.
     start_sec/end_sec columns are already integers in seconds.
     """
     windows = {}
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            if row["event"].strip() != "endobag":
+            if row["event"].strip() != event_name:
                 continue
             fname   = row["filename"].strip()
             case_id = fname.replace("case_", "").replace("_clipped.mp4", "")
@@ -450,15 +448,15 @@ def save_plot(times_s, probs_raw, probs_smooth, gt_windows, pred_segments,
 
 # ── Per-case run ───────────────────────────────────────────────────────────────
 
-def run_case(hold_out_id, cases_dict, endobag_windows, sam2_model, args, device):
+def run_case(hold_out_id, cases_dict, event_windows, sam2_model, args, device):
     video_path = os.path.join(VIDEO_DIR, f"case_{hold_out_id}_clipped.mp4")
     if not os.path.exists(video_path):
         print(f"  SKIP: video not found → {video_path}")
         return
 
-    gt_windows = endobag_windows.get(hold_out_id, [])
+    gt_windows = event_windows.get(hold_out_id, [])
     if not gt_windows:
-        print(f"  SKIP: no endobag annotations for case {hold_out_id}")
+        print(f"  SKIP: no {args.event} annotations for case {hold_out_id}")
         return
 
     print(f"\n{'='*60}")
@@ -578,9 +576,15 @@ def parse_args():
     group = p.add_mutually_exclusive_group(required=True)
     group.add_argument("--hold_out", help="Case ID to hold out (e.g. 219)")
     group.add_argument("--all",      action="store_true")
+    p.add_argument("--event",        default="endobag",
+                   help="Which event from annotate_fine.csv to localise "
+                        "(endobag, vas_cut_1, vas_cut_2, catheter_pull, "
+                        "apical_cut, posterior_cut, seminal_peeling)")
     p.add_argument("--annot_csv",    default=ANNOT_CSV)
-    p.add_argument("--features_dir", default=FEATURES_DIR)
-    p.add_argument("--out_dir",      default=OUT_DIR)
+    p.add_argument("--features_dir", default=None,
+                   help="Defaults to <sam3>/<event>_features/")
+    p.add_argument("--out_dir",      default=None,
+                   help="Defaults to <sam3>/<event>_localization/")
     p.add_argument("--sample_fps",   type=float, default=0.5)
     p.add_argument("--smooth_window",type=float, default=20.0,
                    help="Rolling mean window in seconds (default 20)")
@@ -627,9 +631,16 @@ def main():
         if args.num_workers == 0:
             args.num_workers = 4
 
+    # Derive event-specific default dirs if not explicitly set
+    if args.features_dir is None:
+        args.features_dir = os.path.join(SAM3_DIR, f"{args.event}_features")
+    if args.out_dir is None:
+        args.out_dir = os.path.join(SAM3_DIR, f"{args.event}_localization")
+
+    print(f"Event: {args.event}")
     print(f"\nLoading features from {args.features_dir}/  (slice={args.feature_slice})")
-    cases_dict      = load_all_cases(args.features_dir, feature_slice=args.feature_slice)
-    endobag_windows = parse_endobag_annotations(args.annot_csv)
+    cases_dict    = load_all_cases(args.features_dir, feature_slice=args.feature_slice)
+    event_windows = parse_event_annotations(args.annot_csv, args.event)
 
     print(f"\nLoading SAM2 backbone (variant={args.sam2_variant})...")
     sam2_model = load_sam2(args.sam2_variant, device)
@@ -657,9 +668,9 @@ def main():
     for hold_out_id in hold_outs:
         if hold_out_id not in cases_dict:
             print(f"  SKIP: no features for case {hold_out_id} — "
-                  f"run extract_endobag_features.py first")
+                  f"run extract_endobag_features.py --event {args.event} first")
             continue
-        r = run_case(hold_out_id, cases_dict, endobag_windows, sam2_model, args, device)
+        r = run_case(hold_out_id, cases_dict, event_windows, sam2_model, args, device)
         if r is not None:
             results.append(r)
 

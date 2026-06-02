@@ -252,18 +252,61 @@ As a first attempt, the trained VAS deferens detector was run across every sampl
 
 Since the SAM2 image encoder is entirely frozen and demonstrably produces features sufficient for pixel-level VAS segmentation, those same features must encode enough signal to classify whether a frame belongs to the VAS-cutting phase. The encoder has never been updated — it generalises across all phases of the surgery.
 
-**Pipeline (identical for both events):**
+**Pipeline (event-agnostic — same scripts handle every annotated phase):**
 
 ```
-extract_*_features.py   — sample frames → SAM2 forward_image → avg+max pool FPN coarse scales → .npz
-train_*_classifier.py   — LOCO-CV with logistic regression on the saved features
-localize_*.py           — full-video inference → rolling-mean smoothing → pick highest-confidence segment
+extract_endobag_features.py --event <name>   — sample frames → SAM2 forward_image →
+                                                avg+max pool FPN coarse scales → .npz
+train_endobag_classifier.py                  — LOCO-CV with logistic regression on the saved features
+localize_endobag.py --event <name> --all     — full-video inference → rolling-mean smoothing
+                                                → pick highest-confidence segment per case
 ```
+
+Both scripts accept `--event <name>` where `<name>` is any value from the `event` column of `annotate_fine.csv`. Default is `endobag` for backward compatibility. The output directories are derived from the event name (`<event>_features/`, `<event>_localization/`) so different phases live in separate folders.
+
+The seven currently annotated phases:
+
+| `--event` value | Clinical meaning |
+|---|---|
+| `endobag`         | Specimen placed in extraction bag (end of nerve-sparing window) |
+| `vas_cut_1`       | First (left/right) vas deferens transection |
+| `vas_cut_2`       | Second vas deferens transection |
+| `catheter_pull`   | Catheter pulled after anterior bladder-neck incision (alternative start marker) |
+| `apical_cut`      | Apical dissection — prostate freed from urethra |
+| `posterior_cut`   | Posterior dissection — prostate freed from rectum |
+| `seminal_peeling` | Seminal vesicle dissection |
 
 Feature extraction: the finest FPN scale is discarded (local texture, not useful for phase detection). For the two remaining coarser scales, average and max pooling are concatenated — average captures mean activation, max captures whether a feature is present anywhere in the frame. Final feature vector: **640-d** = `[fpn[1]-avg(256), fpn[1]-max(256), fpn[2]-avg(64), fpn[2]-max(64)]`. The deepest FPN level is 64 channels because SAM2 internally projects it down to `mem_dim` after the FpnNeck — same layout for every Hiera variant.
 
-Annotations for VAS cutting: `intuitive_videos/untitled.txt`.
-Annotations for all events including endobagging: `intuitive_videos/annotate_fine.csv`.
+Annotations for VAS cutting only: `intuitive_videos/untitled.txt`.
+Annotations for all phases (the ones above): `intuitive_videos/annotate_fine.csv`.
+
+### Generalised phase localisation (`run_phase_localization.sh`)
+
+End-to-end orchestrator for any of the phases above — runs feature extraction then LOCO-CV localisation, with the production `--fast` defaults (Hiera-Small, bf16, compile, 4 DataLoader workers, GPU classifier, batch 32):
+
+```bash
+# Run a single phase end-to-end
+bash run_phase_localization.sh vas_cut_1
+bash run_phase_localization.sh apical_cut
+bash run_phase_localization.sh catheter_pull
+
+# Override the backbone / disable --fast for a baseline run
+SAM2_VARIANT=large FAST=0 bash run_phase_localization.sh apical_cut
+
+# Skip extraction if <event>_features/ is already populated
+SKIP_EXTRACT=1 bash run_phase_localization.sh endobag
+
+# Pass extra flags through to localize_endobag.py
+bash run_phase_localization.sh catheter_pull --threshold 0.45 --smooth_window 5
+```
+
+Outputs land in `<event>_features/` and `<event>_localization/`. The orchestrator is a thin wrapper around the two Python scripts — anything they accept can be passed through.
+
+**Caveats when sweeping phases:**
+- LOCO-CV variance grows quickly when a phase has fewer annotated cases than endobag's 7.
+- Short events (e.g. `catheter_pull` typically lasts a few seconds) need a smaller `--smooth_window` (default 20s would average the signal away).
+- For phases that occur multiple times in close temporal proximity (e.g. `vas_cut_1` and `vas_cut_2`), the "highest mean probability" segment picker may select the wrong instance. Raise `--threshold` to demand stronger confidence.
 
 ### Backbone and feature-slice ablation
 
@@ -326,6 +369,8 @@ Amdahl's law on the pipeline composition. The encoder benchmark assumed features
 
 ### Results
 
+So far only `endobag` and `vas_cut` have been swept across all annotated cases; the same pipeline (`run_phase_localization.sh <event>`) extends to every other phase listed above. Results below are with the production `--fast` defaults (Hiera-Small, bf16, compile, 4 workers, GPU classifier, batch 32).
+
 **VAS cutting localisation:** within 1–2 minutes of the true event across held-out cases.
 
 **Endobagging localisation (Hiera-S, 7 cases, LOCO-CV):**
@@ -346,13 +391,12 @@ Amdahl's law on the pipeline composition. The encoder benchmark assumed features
 
 | Script | Purpose |
 |--------|---------|
-| `extract_vas_features.py` | SAM2 feature extraction for VAS cutting frames |
-| `train_vas_classifier.py` | LOCO-CV classifier evaluation for VAS |
-| `localize_vas.py` | Full-video VAS event localisation |
-| `extract_endobag_features.py` | SAM2 feature extraction for endobagging frames |
-| `train_endobag_classifier.py` | LOCO-CV classifier evaluation for endobagging |
-| `localize_endobag.py` | Full-video endobagging event localisation |
-| `run_endobag_size_ablation.sh` | End-to-end ablation: Hiera-S extraction + LOCO-CV across `{large, small} × {all, fpn1, fpn2}` |
+| `extract_endobag_features.py --event <name>` | SAM2 feature extraction for any annotated phase. Default `--event endobag`. Output → `<event>_features/` |
+| `train_endobag_classifier.py` | LOCO-CV classifier evaluation on saved features (read `--features_dir` to switch phases) |
+| `localize_endobag.py --event <name> --all` | Full-video LOCO-CV localisation for any phase. Default `--event endobag`. Output → `<event>_localization/` |
+| `run_phase_localization.sh <event>` | Orchestrator: extract → localise for one phase end-to-end, `--fast` defaults baked in |
+| `extract_vas_features.py` / `localize_vas.py` | Legacy VAS-only scripts (kept for the `untitled.txt` annotation format) |
+| `run_endobag_size_ablation.sh` | Backbone × FPN-slice ablation: Hiera-S extraction + LOCO-CV across `{large, small} × {all, fpn1, fpn2}` |
 | `benchmark.py` | Encoder forward + end-to-end pipeline benchmarks (cv2 serial, cv2+DataLoader, TorchCodec if installed) |
 | `install_torchcodec_isolated.sh` | Optional: `--target` pip install of TorchCodec into `.torchcodec_env/` so the container's torch is untouched |
 

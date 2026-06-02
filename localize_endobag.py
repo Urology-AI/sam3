@@ -41,8 +41,26 @@ OUT_DIR      = os.path.join(SAM3_DIR, "endobag_localization")
 sys.path.insert(0, SAM3_DIR)
 sys.path.insert(0, SAM2_DIR)
 
-SAM2_CKPT = os.path.join(SAM2_DIR, "checkpoints/sam2.1_hiera_large.pt")
-SAM2_CFG  = "configs/sam2.1/sam2.1_hiera_l.yaml"
+VARIANT_TO_CKPT = {
+    "tiny":  "checkpoints/sam2.1_hiera_tiny.pt",
+    "small": "checkpoints/sam2.1_hiera_small.pt",
+    "base":  "checkpoints/sam2.1_hiera_base_plus.pt",
+    "large": "checkpoints/sam2.1_hiera_large.pt",
+}
+VARIANT_TO_CFG = {
+    "tiny":  "configs/sam2.1/sam2.1_hiera_t.yaml",
+    "small": "configs/sam2.1/sam2.1_hiera_s.yaml",
+    "base":  "configs/sam2.1/sam2.1_hiera_b+.yaml",
+    "large": "configs/sam2.1/sam2.1_hiera_l.yaml",
+}
+
+# Saved feature layout (per scale: 256 channels, order avg-then-max)
+SLICE_RANGES = {
+    "all":  (None, None),
+    "fpn1": (0,    512),
+    "fpn2": (512,  None),
+}
+
 IMG_SIZE  = 1024
 IMG_MEAN  = torch.tensor([0.485, 0.456, 0.406])[:, None, None]
 IMG_STD   = torch.tensor([0.229, 0.224, 0.225])[:, None, None]
@@ -72,13 +90,15 @@ def parse_endobag_annotations(path):
 
 # ── Feature loading ────────────────────────────────────────────────────────────
 
-def load_all_cases(features_dir):
+def load_all_cases(features_dir, feature_slice="all"):
+    lo, hi = SLICE_RANGES[feature_slice]
     cases = {}
     for path in sorted(glob.glob(os.path.join(features_dir, "case_*.npz"))):
         d = np.load(path, allow_pickle=True)
         case_id = str(d["case_id"])
+        feats = d["features"].astype(np.float32)[:, lo:hi]
         cases[case_id] = {
-            "features": d["features"].astype(np.float32),
+            "features": feats,
             "labels":   d["labels"].astype(np.int32),
         }
     return cases
@@ -107,15 +127,18 @@ def train_classifier(cases_dict, hold_out_id):
 
 # ── Full-video inference ───────────────────────────────────────────────────────
 
-def load_sam2(device):
+def load_sam2(variant, device):
     from sam2.build_sam import build_sam2
-    model = build_sam2(SAM2_CFG, SAM2_CKPT, device=device)
+    ckpt = os.path.join(SAM2_DIR, VARIANT_TO_CKPT[variant])
+    cfg  = VARIANT_TO_CFG[variant]
+    model = build_sam2(cfg, ckpt, device=device)
     model.eval()
+    print(f"  SAM2-{variant} loaded  ({ckpt})")
     return model
 
 
 @torch.no_grad()
-def extract_batch(model, frames_t, device):
+def extract_batch(model, frames_t, device, feature_slice="all"):
     imgs = frames_t.to(device)
     backbone_out = model.forward_image(imgs)
     fpn = backbone_out["backbone_fpn"]
@@ -123,11 +146,14 @@ def extract_batch(model, frames_t, device):
     for f in fpn[1:]:
         pooled.append(f.mean(dim=[2, 3]))
         pooled.append(f.amax(dim=[2, 3]))
-    return torch.cat(pooled, dim=1).cpu().float().numpy()
+    feats = torch.cat(pooled, dim=1).cpu().float().numpy()
+    lo, hi = SLICE_RANGES[feature_slice]
+    return feats[:, lo:hi]
 
 
 def infer_full_video(video_path, model, clf, scaler_mean, scaler_std,
-                     sample_fps, batch_size, sbs_eye, device):
+                     sample_fps, batch_size, sbs_eye, device,
+                     feature_slice="all"):
     cap          = cv2.VideoCapture(video_path)
     fps          = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -165,7 +191,7 @@ def infer_full_video(video_path, model, clf, scaler_mean, scaler_std,
             pbar.update(1)
 
             if len(frame_tensors) == batch_size:
-                feats = extract_batch(model, torch.stack(frame_tensors), device)
+                feats = extract_batch(model, torch.stack(frame_tensors), device, feature_slice)
                 feats_s = (feats - scaler_mean) / scaler_std
                 probs = clf.predict_proba(feats_s)[:, 1]
                 all_probs.extend(probs.tolist())
@@ -178,7 +204,7 @@ def infer_full_video(video_path, model, clf, scaler_mean, scaler_std,
         frame_num += 1
 
     if frame_tensors:
-        feats = extract_batch(model, torch.stack(frame_tensors), device)
+        feats = extract_batch(model, torch.stack(frame_tensors), device, feature_slice)
         feats_s = (feats - scaler_mean) / scaler_std
         probs = clf.predict_proba(feats_s)[:, 1]
         all_probs.extend(probs.tolist())
@@ -299,10 +325,12 @@ def run_case(hold_out_id, cases_dict, endobag_windows, sam2_model, args, device)
 
     clf, scaler_mean, scaler_std = train_classifier(cases_dict, hold_out_id)
 
-    print(f"\n  Running full-video inference at {args.sample_fps} fps ...")
+    print(f"\n  Running full-video inference at {args.sample_fps} fps "
+          f"(variant={args.sam2_variant}, slice={args.feature_slice}) ...")
     times_s, probs_raw = infer_full_video(
         video_path, sam2_model, clf, scaler_mean, scaler_std,
         args.sample_fps, args.batch_size, args.sbs_eye, device,
+        feature_slice=args.feature_slice,
     )
 
     window_frames = max(1, int(args.smooth_window * args.sample_fps))
@@ -404,6 +432,12 @@ def parse_args():
     p.add_argument("--batch_size",   type=int,   default=8)
     p.add_argument("--sbs_eye",      default="none",
                    choices=["left", "right", "none"])
+    p.add_argument("--sam2_variant", default="large",
+                   choices=["tiny", "small", "base", "large"],
+                   help="Hiera backbone to use for held-out video feature extraction")
+    p.add_argument("--feature_slice", default="all",
+                   choices=list(SLICE_RANGES.keys()),
+                   help="all=1024-d, fpn1=mid-level 512-d, fpn2=scene-level 512-d")
     return p.parse_args()
 
 
@@ -416,12 +450,12 @@ def main():
         torch.backends.cudnn.allow_tf32       = True
     print(f"GPU: {torch.cuda.get_device_name(0)}")
 
-    print(f"\nLoading features from {args.features_dir}/")
-    cases_dict      = load_all_cases(args.features_dir)
+    print(f"\nLoading features from {args.features_dir}/  (slice={args.feature_slice})")
+    cases_dict      = load_all_cases(args.features_dir, feature_slice=args.feature_slice)
     endobag_windows = parse_endobag_annotations(args.annot_csv)
 
-    print(f"\nLoading SAM2 backbone...")
-    sam2_model = load_sam2(device)
+    print(f"\nLoading SAM2 backbone (variant={args.sam2_variant})...")
+    sam2_model = load_sam2(args.sam2_variant, device)
 
     hold_outs = list(cases_dict.keys()) if args.all else [args.hold_out]
 

@@ -250,7 +250,7 @@ As a first attempt, the trained VAS deferens detector was run across every sampl
 
 ### Embedding-Based Approach
 
-Since the SAM2 image encoder (Hiera-L ViT) is entirely frozen and demonstrably produces features sufficient for pixel-level VAS segmentation, those same features must encode enough signal to classify whether a frame belongs to the VAS-cutting phase. The encoder has never been updated — it generalises across all phases of the surgery.
+Since the SAM2 image encoder is entirely frozen and demonstrably produces features sufficient for pixel-level VAS segmentation, those same features must encode enough signal to classify whether a frame belongs to the VAS-cutting phase. The encoder has never been updated — it generalises across all phases of the surgery.
 
 **Pipeline (identical for both events):**
 
@@ -260,28 +260,43 @@ train_*_classifier.py   — LOCO-CV with logistic regression on the saved featur
 localize_*.py           — full-video inference → rolling-mean smoothing → pick highest-confidence segment
 ```
 
-Feature extraction: the finest FPN scale is discarded (local texture, not useful for phase detection). For the two remaining coarser scales, average and max pooling are concatenated — average captures mean activation, max captures whether a feature is present anywhere in the frame. Final feature vector: **1024-d** (2 scales × 2 pooling modes × 256 channels).
+Feature extraction: the finest FPN scale is discarded (local texture, not useful for phase detection). For the two remaining coarser scales, average and max pooling are concatenated — average captures mean activation, max captures whether a feature is present anywhere in the frame. Final feature vector: **640-d** = `[fpn[1]-avg(256), fpn[1]-max(256), fpn[2]-avg(64), fpn[2]-max(64)]`. The deepest FPN level is 64 channels because SAM2 internally projects it down to `mem_dim` after the FpnNeck — same layout for every Hiera variant.
 
 Annotations for VAS cutting: `intuitive_videos/untitled.txt`.
 Annotations for all events including endobagging: `intuitive_videos/annotate_fine.csv`.
+
+### Backbone and feature-slice ablation
+
+Run via `bash run_endobag_size_ablation.sh`. Per-frame LOCO-CV (7 cases):
+
+| Variant | Slice | feat_dim | AUC-ROC | F1 | Accuracy |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Large | all  | 640 | 0.975 ± 0.023 | 0.685 | 0.898 |
+| Large | fpn1 | 512 | 0.950 ± 0.070 | 0.710 | 0.896 |
+| Large | fpn2 | 128 | 0.907 ± 0.104 | 0.653 | 0.882 |
+| **Small** | **all**  | **640** | **0.964 ± 0.050** | **0.757** | **0.926** |
+| Small | fpn1 | 512 | 0.930 ± 0.082 | 0.665 | 0.887 |
+| Small | fpn2 | 128 | 0.949 ± 0.046 | 0.748 | 0.905 |
+
+Findings: (i) dropping either FPN scale hurts both backbones — keep all 640-d; (ii) Hiera-Small matches Hiera-Large on per-frame AUC (within fold noise) and is the production choice because it wins on full-video localisation and runs ~5× faster.
 
 ### Results
 
 **VAS cutting localisation:** within 1–2 minutes of the true event across held-out cases.
 
-**Endobagging localisation (7 cases, LOCO-CV):**
+**Endobagging localisation (Hiera-S, 7 cases, LOCO-CV):**
 
 | Case | GT start | Selected | Start error | Within 3 min |
 |------|----------|----------|-------------|--------------|
 | 213 | 4093s (68.2m) | 4096s | +3s | ✓ |
 | 214 | 3159s (52.6m) | 3304s | +145s | ✓ |
-| 219 | 2632s (43.9m) | 2244s | −388s | ✗ |
-| 220 | 3382s (56.4m) | 3380s | −2s | ✓ |
-| 222 | 4742s (79.0m) | 4868s | +126s | ✓ |
-| 245 | 5501s (91.7m) | 486s | −5015s | ✗ |
-| 246 | 5096s (84.9m) | 5108s | +12s | ✓ |
+| 219 | 2632s (43.9m) | 2660s | +28s | ✓ |
+| 220 | 3382s (56.4m) | 3386s | +4s | ✓ |
+| 222 | 4742s (79.0m) | 4870s | +128s | ✓ |
+| 245 | 5501s (91.7m) | 4724s | −777s | ✗ |
+| 246 | 5096s (84.9m) | 5100s | +4s | ✓ |
 
-**5/7 (71%) within 3 minutes.** The two failures are cases where a visually similar scene earlier in the surgery scores higher confidence than the true endobagging window — more training cases expected to resolve this.
+**6/7 (86%) within 3 minutes.** Median error 28s, mean 156s. For comparison, Hiera-L on the same protocol was 5/7 with median 126s, mean 813s — the smaller backbone gives both higher hit rate and ~5× tighter localisation. The remaining failure (case 245) is a structurally similar earlier scene scoring higher than the true endobag; since endobagging is by definition the last sustained event in the surgery, switching `pick_best_segment` to "latest segment above threshold" is the next mitigation.
 
 ### Scripts
 
@@ -293,6 +308,7 @@ Annotations for all events including endobagging: `intuitive_videos/annotate_fin
 | `extract_endobag_features.py` | SAM2 feature extraction for endobagging frames |
 | `train_endobag_classifier.py` | LOCO-CV classifier evaluation for endobagging |
 | `localize_endobag.py` | Full-video endobagging event localisation |
+| `run_endobag_size_ablation.sh` | End-to-end ablation: Hiera-S extraction + LOCO-CV across `{large, small} × {all, fpn1, fpn2}` |
 
 ---
 

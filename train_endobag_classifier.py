@@ -29,13 +29,30 @@ import numpy as np
 SAM3_DIR             = os.path.dirname(os.path.abspath(__file__))
 FEATURES_DIR_DEFAULT = os.path.join(SAM3_DIR, "endobag_features")
 
+# Saved feature vector layout (1024-d):
+#   [0:256]    fpn[1] avg-pool   (mid-level)
+#   [256:512]  fpn[1] max-pool   (mid-level)
+#   [512:768]  fpn[2] avg-pool   (scene-level)
+#   [768:1024] fpn[2] max-pool   (scene-level)
+SLICE_RANGES = {
+    "all":  (None, None),
+    "fpn1": (0,    512),
+    "fpn2": (512,  None),
+}
 
-def load_all_cases(features_dir):
+
+def apply_feature_slice(features, slice_name):
+    lo, hi = SLICE_RANGES[slice_name]
+    return features[:, lo:hi]
+
+
+def load_all_cases(features_dir, feature_slice="all"):
     cases = []
     for path in sorted(glob.glob(os.path.join(features_dir, "case_*.npz"))):
         d = np.load(path, allow_pickle=True)
         case_id  = str(d["case_id"])
         features = d["features"].astype(np.float32)
+        features = apply_feature_slice(features, feature_slice)
         labels   = d["labels"].astype(np.int32)
         cases.append((case_id, features, labels))
         n_pos = labels.sum()
@@ -178,6 +195,9 @@ def parse_args():
                    choices=["logreg", "mlp", "both"])
     p.add_argument("--C",            type=float, default=1.0)
     p.add_argument("--hidden",       type=int,   default=256)
+    p.add_argument("--feature_slice", default="all",
+                   choices=list(SLICE_RANGES.keys()),
+                   help="all=1024-d, fpn1=mid-level 512-d, fpn2=scene-level 512-d")
     p.add_argument("--out_dir",      default=None)
     return p.parse_args()
 
@@ -186,8 +206,8 @@ def main():
     args = parse_args()
     out_dir = args.out_dir or args.features_dir
 
-    print(f"Loading features from {args.features_dir}/")
-    cases = load_all_cases(args.features_dir)
+    print(f"Loading features from {args.features_dir}/  (slice={args.feature_slice})")
+    cases = load_all_cases(args.features_dir, feature_slice=args.feature_slice)
     if not cases:
         print("No .npz files found. Run extract_endobag_features.py first.")
         return
@@ -199,16 +219,18 @@ def main():
 
     models = ["logreg", "mlp"] if args.model == "both" else [args.model]
 
+    tag = f"{args.feature_slice}"
     for model_type in models:
         print(f"\n{'─'*60}")
-        print(f"  Running LOCO-CV with {model_type}")
+        print(f"  Running LOCO-CV with {model_type}  (slice={tag})")
         print(f"{'─'*60}")
         results = loco_cv(cases, model_type, C=args.C, hidden=args.hidden)
         report(results, model_type)
+        os.makedirs(out_dir, exist_ok=True)
         confusion_matrix_plot(results, model_type,
-                              os.path.join(out_dir, f"confusion_{model_type}.png"))
+                              os.path.join(out_dir, f"confusion_{model_type}_{tag}.png"))
         roc_plot(results, model_type,
-                 os.path.join(out_dir, f"roc_{model_type}.png"))
+                 os.path.join(out_dir, f"roc_{model_type}_{tag}.png"))
 
 
 if __name__ == "__main__":

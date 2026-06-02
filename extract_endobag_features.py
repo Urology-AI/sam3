@@ -38,8 +38,18 @@ OUT_DIR_DEFAULT = os.path.join(SAM3_DIR, "endobag_features")
 sys.path.insert(0, SAM3_DIR)
 sys.path.insert(0, SAM2_DIR)
 
-SAM2_CKPT = os.path.join(SAM2_DIR, "checkpoints/sam2.1_hiera_large.pt")
-SAM2_CFG  = "configs/sam2.1/sam2.1_hiera_l.yaml"
+VARIANT_TO_CKPT = {
+    "tiny":  "checkpoints/sam2.1_hiera_tiny.pt",
+    "small": "checkpoints/sam2.1_hiera_small.pt",
+    "base":  "checkpoints/sam2.1_hiera_base_plus.pt",
+    "large": "checkpoints/sam2.1_hiera_large.pt",
+}
+VARIANT_TO_CFG = {
+    "tiny":  "configs/sam2.1/sam2.1_hiera_t.yaml",
+    "small": "configs/sam2.1/sam2.1_hiera_s.yaml",
+    "base":  "configs/sam2.1/sam2.1_hiera_b+.yaml",
+    "large": "configs/sam2.1/sam2.1_hiera_l.yaml",
+}
 
 IMG_SIZE  = 1024
 IMG_MEAN  = torch.tensor([0.485, 0.456, 0.406])[:, None, None]
@@ -72,11 +82,13 @@ def parse_endobag_annotations(path):
 
 # ── Feature extraction ─────────────────────────────────────────────────────────
 
-def load_sam2(device):
+def load_sam2(variant, device):
     from sam2.build_sam import build_sam2
-    model = build_sam2(SAM2_CFG, SAM2_CKPT, device=device)
+    ckpt = os.path.join(SAM2_DIR, VARIANT_TO_CKPT[variant])
+    cfg  = VARIANT_TO_CFG[variant]
+    model = build_sam2(cfg, ckpt, device=device)
     model.eval()
-    print(f"  SAM2-large loaded")
+    print(f"  SAM2-{variant} loaded  ({ckpt})")
     return model
 
 
@@ -215,6 +227,9 @@ def parse_args():
     p.add_argument("--batch_size",  type=int,   default=8)
     p.add_argument("--sbs_eye",     default="none",
                    choices=["left", "right", "none"])
+    p.add_argument("--sam2_variant", default="large",
+                   choices=["tiny", "small", "base", "large"],
+                   help="Which Hiera backbone variant to extract features with")
     p.add_argument("--cases",       default=None,
                    help="Comma-separated case IDs to process (default: all in csv)")
     return p.parse_args()
@@ -237,9 +252,9 @@ def main():
 
     print(f"\nCases to process: {sorted(windows.keys())}")
     print(f"Sample rate: {args.sample_fps} fps  |  neg_ratio: {args.neg_ratio}  "
-          f"|  sbs_eye: {args.sbs_eye}\n")
+          f"|  sbs_eye: {args.sbs_eye}  |  variant: {args.sam2_variant}\n")
 
-    model = load_sam2(device)
+    model = load_sam2(args.sam2_variant, device)
 
     for case_id, endobag_windows in tqdm(sorted(windows.items()),
                                          desc="Cases", unit="case", ncols=80):

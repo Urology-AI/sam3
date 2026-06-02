@@ -278,7 +278,26 @@ Run via `bash run_endobag_size_ablation.sh`. Per-frame LOCO-CV (7 cases):
 | Small | fpn1 | 512 | 0.930 ± 0.082 | 0.665 | 0.887 |
 | Small | fpn2 | 128 | 0.949 ± 0.046 | 0.748 | 0.905 |
 
-Findings: (i) dropping either FPN scale hurts both backbones — keep all 640-d; (ii) Hiera-Small matches Hiera-Large on per-frame AUC (within fold noise) and is the production choice because it wins on full-video localisation and runs ~5× faster.
+Findings: (i) dropping either FPN scale hurts both backbones — keep all 640-d; (ii) Hiera-Small matches Hiera-Large on per-frame AUC (within fold noise) and is the production choice because it wins on full-video localisation and runs **3.57× faster** at the encoder (measured — see throughput benchmark below).
+
+### Encoder throughput benchmark
+
+Pure-GPU `forward_image` throughput at batch 32, 1024×1024 input, H100 80GB. Script: `bash run_encoder_benchmark.sh`. Synthetic input pre-allocated on the device — no video decode, no preprocessing, isolates encoder work from I/O.
+
+| Variant | Config             | fps    | ms/frame | Peak GB | Speedup |
+|---------|--------------------|-------:|---------:|--------:|--------:|
+| Large   | fp32 baseline      |  46.46 |   21.52  |  14.88  |   1.00× |
+| Large   | + bf16 autocast    |  85.92 |   11.64  |   9.82  |   1.85× |
+| Large   | + bf16 + compile   | 131.96 |    7.58  |   9.30  |   2.84× |
+| **Small** | **fp32 baseline**  | 151.55 |    6.60  |   9.71  |   1.00× |
+| **Small** | **+ bf16 autocast**| 276.37 |    3.62  |   6.76  |   1.82× |
+| **Small** | **+ bf16 + compile**| **471.29** | **2.12** | **6.15** | **3.11×** |
+
+**Key results:**
+- bf16 autocast alone is ~1.85× over fp32, with no code changes beyond a one-line `torch.autocast` wrapper. The current extraction scripts run fp32 — wrapping `forward_image` is free throughput.
+- `torch.compile` (`mode="default"`) on top of bf16 gives another ~1.5–1.7×, total ~3× over the fp32 baseline. Cost: ~30s of graph capture at startup.
+- **Hiera-S vs Hiera-L, best config vs best config: 3.57×.** The earlier "~5×" estimate (based on FLOPs ratio) was too optimistic — H100 is latency-bound at this batch size, so wall-clock ratio is closer to ~3.5× than the raw FLOPs would suggest.
+- Throughput here is the encoder alone. End-to-end extraction throughput including `cv2.set/read/resize` will be lower since video I/O does not benefit from bf16 or compile.
 
 ### Results
 
@@ -309,6 +328,7 @@ Findings: (i) dropping either FPN scale hurts both backbones — keep all 640-d;
 | `train_endobag_classifier.py` | LOCO-CV classifier evaluation for endobagging |
 | `localize_endobag.py` | Full-video endobagging event localisation |
 | `run_endobag_size_ablation.sh` | End-to-end ablation: Hiera-S extraction + LOCO-CV across `{large, small} × {all, fpn1, fpn2}` |
+| `benchmark_encoder.py` / `run_encoder_benchmark.sh` | Pure-GPU `forward_image` throughput across `{large, small} × {fp32, bf16, bf16+compile}` |
 
 ---
 

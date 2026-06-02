@@ -20,14 +20,16 @@ Usage
 """
 
 import argparse
+import csv
+import glob
 import os
 import sys
-import glob
-import csv
+import time
 
 import cv2
 import numpy as np
 import torch
+from torch.utils.data import IterableDataset, DataLoader, get_worker_info
 from tqdm import tqdm
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -138,29 +140,156 @@ def load_sam2(variant, device):
 
 
 @torch.no_grad()
-def extract_batch(model, frames_t, device, feature_slice="all"):
-    imgs = frames_t.to(device)
-    backbone_out = model.forward_image(imgs)
+def extract_batch(model, frames_t, device, feature_slice="all", use_bf16=False,
+                  return_gpu=False):
+    """Returns pooled features. By default → CPU numpy [B, D] (compat with sklearn).
+    With return_gpu=True → torch tensor on `device` (no sync, used by GPULogReg)."""
+    imgs = frames_t.to(device, non_blocking=True)
+    if use_bf16:
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            backbone_out = model.forward_image(imgs)
+    else:
+        backbone_out = model.forward_image(imgs)
     fpn = backbone_out["backbone_fpn"]
     pooled = []
     for f in fpn[1:]:
         pooled.append(f.mean(dim=[2, 3]))
         pooled.append(f.amax(dim=[2, 3]))
-    feats = torch.cat(pooled, dim=1).cpu().float().numpy()
+    feats = torch.cat(pooled, dim=1).float()      # [B, D] on `device`
     lo, hi = SLICE_RANGES[feature_slice]
-    return feats[:, lo:hi]
+    feats = feats[:, lo:hi]
+    if return_gpu:
+        return feats
+    return feats.cpu().numpy()
+
+
+class GPULogReg:
+    """Binary logistic regression on GPU — mathematically equivalent to
+    sklearn LogisticRegression.predict_proba(...)[:, 1] but stays on device.
+
+    Avoids the per-batch CUDA sync that would otherwise be forced by pulling
+    feature vectors to CPU between encoder calls."""
+    def __init__(self, sklearn_clf, scaler_mean, scaler_std, device):
+        # sklearn binary: coef_ shape (1, D), intercept_ shape (1,)
+        w = sklearn_clf.coef_[0].astype(np.float32)
+        b = float(sklearn_clf.intercept_[0])
+        self.w    = torch.from_numpy(w).to(device)
+        self.b    = torch.tensor(b, device=device)
+        self.mean = torch.from_numpy(scaler_mean.astype(np.float32)).to(device)
+        self.std  = torch.from_numpy(scaler_std.astype(np.float32)).to(device)
+
+    @torch.no_grad()
+    def predict_proba(self, feats):
+        """feats: [B, D] on GPU. Returns [B] of P(class=1) on GPU."""
+        z = (feats - self.mean) / self.std
+        return torch.sigmoid(z @ self.w + self.b)
+
+
+class VideoFrameDataset(IterableDataset):
+    """Iterable dataset for sequential video sampling. Splits the frame-index
+    list into N contiguous per-worker chunks; each worker pays ONE seek to the
+    start of its chunk, then advances via cv2.grab() (no decode) + cv2.read()
+    sequentially. This is the same access pattern as the inline baseline, just
+    parallelised across worker processes."""
+    def __init__(self, video_path, indices, fps, sbs_eye):
+        self.video_path = video_path
+        self.indices    = sorted(int(i) for i in indices)
+        self.fps        = float(fps)
+        self.sbs_eye    = sbs_eye
+
+    def _preprocess(self, frame_bgr):
+        if self.sbs_eye == "left":
+            frame_bgr = frame_bgr[:, :frame_bgr.shape[1] // 2]
+        elif self.sbs_eye == "right":
+            frame_bgr = frame_bgr[:, frame_bgr.shape[1] // 2:]
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        frame_rgb = cv2.resize(frame_rgb, (IMG_SIZE, IMG_SIZE),
+                               interpolation=cv2.INTER_LINEAR)
+        t = torch.from_numpy(frame_rgb.astype(np.float32) / 255.0).permute(2, 0, 1)
+        return (t - IMG_MEAN) / IMG_STD
+
+    def __iter__(self):
+        info = get_worker_info()
+        if info is None:
+            chunk = self.indices
+        else:
+            n          = len(self.indices)
+            chunk_size = (n + info.num_workers - 1) // info.num_workers
+            start      = info.id * chunk_size
+            end        = min(start + chunk_size, n)
+            chunk      = self.indices[start:end]
+
+        if not chunk:
+            return
+
+        cap = cv2.VideoCapture(self.video_path)
+        try:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, chunk[0])
+            current = chunk[0]
+            for fi in chunk:
+                while current < fi:
+                    cap.grab()
+                    current += 1
+                ret, frame_bgr = cap.read()
+                current += 1
+                if not ret:
+                    frame_bgr = np.zeros((IMG_SIZE, IMG_SIZE, 3), dtype=np.uint8)
+                yield self._preprocess(frame_bgr), fi / self.fps
+        finally:
+            cap.release()
 
 
 def infer_full_video(video_path, model, clf, scaler_mean, scaler_std,
                      sample_fps, batch_size, sbs_eye, device,
-                     feature_slice="all"):
+                     feature_slice="all", use_bf16=False, num_workers=0,
+                     gpu_classifier=False):
     cap          = cv2.VideoCapture(video_path)
     fps          = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     stride       = max(1, int(round(fps / sample_fps)))
-    n_samples    = total_frames // stride
     cap.release()
 
+    # Construct GPU classifier once if requested (cheap — a few small tensors).
+    gpu_clf = GPULogReg(clf, scaler_mean, scaler_std, device) if gpu_classifier else None
+
+    # ── DataLoader path (CPU decode + preprocess in worker processes) ─────
+    if num_workers > 0:
+        indices = list(range(0, total_frames, stride))
+        ds = VideoFrameDataset(video_path, indices, fps, sbs_eye)
+        loader = DataLoader(
+            ds, batch_size=batch_size, num_workers=num_workers,
+            pin_memory=True, prefetch_factor=2,
+        )
+        times_s        = []
+        prob_chunks    = []  # list of [B] GPU tensors when gpu_clf else list of np arrays
+        pbar = tqdm(total=len(indices), desc=f"  inference (DL nw={num_workers})",
+                    unit="frame", ncols=80)
+        for batch_t, batch_times in loader:
+            if gpu_clf is not None:
+                feats = extract_batch(model, batch_t, device, feature_slice,
+                                       use_bf16=use_bf16, return_gpu=True)
+                prob_chunks.append(gpu_clf.predict_proba(feats))
+            else:
+                feats   = extract_batch(model, batch_t, device, feature_slice,
+                                         use_bf16=use_bf16)
+                feats_s = (feats - scaler_mean) / scaler_std
+                prob_chunks.append(clf.predict_proba(feats_s)[:, 1])
+            times_s.extend(batch_times.tolist())
+            pbar.update(batch_t.size(0))
+        pbar.close()
+        # Single GPU→CPU sync at the very end (one transfer, not 500).
+        if gpu_clf is not None:
+            all_probs = torch.cat(prob_chunks).cpu().numpy()
+        else:
+            all_probs = np.concatenate(prob_chunks)
+        # Workers emit chunks in interleaved order — sort by time so the
+        # downstream smoothing / segment-finding sees a monotonic series.
+        times_arr = np.array(times_s)
+        order     = np.argsort(times_arr)
+        return times_arr[order], all_probs[order]
+
+    # ── Inline path — original behavior, preserved for baseline timing ────
+    n_samples = total_frames // stride
     cap = cv2.VideoCapture(video_path)
     frame_tensors = []
     times_s       = []
@@ -191,10 +320,15 @@ def infer_full_video(video_path, model, clf, scaler_mean, scaler_std,
             pbar.update(1)
 
             if len(frame_tensors) == batch_size:
-                feats = extract_batch(model, torch.stack(frame_tensors), device, feature_slice)
-                feats_s = (feats - scaler_mean) / scaler_std
-                probs = clf.predict_proba(feats_s)[:, 1]
-                all_probs.extend(probs.tolist())
+                if gpu_clf is not None:
+                    feats = extract_batch(model, torch.stack(frame_tensors), device,
+                                           feature_slice, use_bf16=use_bf16, return_gpu=True)
+                    all_probs.append(gpu_clf.predict_proba(feats))
+                else:
+                    feats   = extract_batch(model, torch.stack(frame_tensors), device,
+                                             feature_slice, use_bf16=use_bf16)
+                    feats_s = (feats - scaler_mean) / scaler_std
+                    all_probs.extend(clf.predict_proba(feats_s)[:, 1].tolist())
                 frame_tensors = []
         else:
             ret = cap.grab()
@@ -204,15 +338,24 @@ def infer_full_video(video_path, model, clf, scaler_mean, scaler_std,
         frame_num += 1
 
     if frame_tensors:
-        feats = extract_batch(model, torch.stack(frame_tensors), device, feature_slice)
-        feats_s = (feats - scaler_mean) / scaler_std
-        probs = clf.predict_proba(feats_s)[:, 1]
-        all_probs.extend(probs.tolist())
+        if gpu_clf is not None:
+            feats = extract_batch(model, torch.stack(frame_tensors), device,
+                                   feature_slice, use_bf16=use_bf16, return_gpu=True)
+            all_probs.append(gpu_clf.predict_proba(feats))
+        else:
+            feats   = extract_batch(model, torch.stack(frame_tensors), device,
+                                     feature_slice, use_bf16=use_bf16)
+            feats_s = (feats - scaler_mean) / scaler_std
+            all_probs.extend(clf.predict_proba(feats_s)[:, 1].tolist())
 
     pbar.close()
     cap.release()
 
-    return np.array(times_s), np.array(all_probs)
+    if gpu_clf is not None:
+        all_probs = torch.cat(all_probs).cpu().numpy()
+    else:
+        all_probs = np.array(all_probs)
+    return np.array(times_s), all_probs
 
 
 # ── Temporal post-processing ───────────────────────────────────────────────────
@@ -326,12 +469,25 @@ def run_case(hold_out_id, cases_dict, endobag_windows, sam2_model, args, device)
     clf, scaler_mean, scaler_std = train_classifier(cases_dict, hold_out_id)
 
     print(f"\n  Running full-video inference at {args.sample_fps} fps "
-          f"(variant={args.sam2_variant}, slice={args.feature_slice}) ...")
+          f"(variant={args.sam2_variant}, slice={args.feature_slice}, "
+          f"bf16={args.use_bf16}, compile={args.use_compile}, "
+          f"nw={args.num_workers}, gpu_clf={args.gpu_classifier}, "
+          f"batch={args.batch_size}) ...")
+    t0 = time.perf_counter()
     times_s, probs_raw = infer_full_video(
         video_path, sam2_model, clf, scaler_mean, scaler_std,
         args.sample_fps, args.batch_size, args.sbs_eye, device,
         feature_slice=args.feature_slice,
+        use_bf16=args.use_bf16,
+        num_workers=args.num_workers,
+        gpu_classifier=args.gpu_classifier,
     )
+    torch.cuda.synchronize()
+    elapsed       = time.perf_counter() - t0
+    n_frames      = len(times_s)
+    fps_sustained = n_frames / elapsed if elapsed > 0 else float("nan")
+    print(f"  Inference time: {elapsed:.1f}s  ({n_frames} frames, "
+          f"{fps_sustained:.2f} fps sustained)")
 
     window_frames = max(1, int(args.smooth_window * args.sample_fps))
     probs_smooth  = rolling_mean(probs_raw, window_frames)
@@ -429,7 +585,8 @@ def parse_args():
     p.add_argument("--smooth_window",type=float, default=20.0,
                    help="Rolling mean window in seconds (default 20)")
     p.add_argument("--threshold",    type=float, default=0.5)
-    p.add_argument("--batch_size",   type=int,   default=8)
+    p.add_argument("--batch_size",   type=int,   default=32,
+                   help="Encoder batch size. Larger amortises per-batch CPU/sync overhead.")
     p.add_argument("--sbs_eye",      default="none",
                    choices=["left", "right", "none"])
     p.add_argument("--sam2_variant", default="large",
@@ -438,6 +595,18 @@ def parse_args():
     p.add_argument("--feature_slice", default="all",
                    choices=list(SLICE_RANGES.keys()),
                    help="all=1024-d, fpn1=mid-level 512-d, fpn2=scene-level 512-d")
+    # Optimisation flags (all default OFF so behaviour matches the original baseline)
+    p.add_argument("--use_bf16",     action="store_true",
+                   help="Wrap forward_image in torch.autocast(bf16)")
+    p.add_argument("--use_compile",  action="store_true",
+                   help="torch.compile(forward_image, mode='default') with warmup")
+    p.add_argument("--num_workers",  type=int, default=0,
+                   help="DataLoader workers for CPU decode/preprocess. 0 = inline loop (baseline)")
+    p.add_argument("--gpu_classifier", action="store_true",
+                   help="Run the logistic regression on GPU (no per-batch CUDA sync / sklearn call)")
+    p.add_argument("--fast",         action="store_true",
+                   help="Shortcut: enables --use_bf16, --use_compile, --gpu_classifier, "
+                        "and num_workers=4 if unset")
     return p.parse_args()
 
 
@@ -450,12 +619,37 @@ def main():
         torch.backends.cudnn.allow_tf32       = True
     print(f"GPU: {torch.cuda.get_device_name(0)}")
 
+    # --fast master switch: turn on all optimisations unless individually overridden
+    if args.fast:
+        args.use_bf16       = True
+        args.use_compile    = True
+        args.gpu_classifier = True
+        if args.num_workers == 0:
+            args.num_workers = 4
+
     print(f"\nLoading features from {args.features_dir}/  (slice={args.feature_slice})")
     cases_dict      = load_all_cases(args.features_dir, feature_slice=args.feature_slice)
     endobag_windows = parse_endobag_annotations(args.annot_csv)
 
     print(f"\nLoading SAM2 backbone (variant={args.sam2_variant})...")
     sam2_model = load_sam2(args.sam2_variant, device)
+
+    if args.use_compile:
+        print("  Wrapping forward_image with torch.compile(mode='default')...")
+        sam2_model.forward_image = torch.compile(sam2_model.forward_image, mode="default")
+        print("  Warming up compile graph (one-time, ~30s)...")
+        warmup_imgs = torch.randn(args.batch_size, 3, IMG_SIZE, IMG_SIZE, device=device)
+        for _ in range(5):
+            with torch.no_grad():
+                if args.use_bf16:
+                    with torch.autocast("cuda", dtype=torch.bfloat16):
+                        _ = sam2_model.forward_image(warmup_imgs)
+                else:
+                    _ = sam2_model.forward_image(warmup_imgs)
+        torch.cuda.synchronize()
+        del warmup_imgs
+        torch.cuda.empty_cache()
+        print("  Compile ready.")
 
     hold_outs = list(cases_dict.keys()) if args.all else [args.hold_out]
 

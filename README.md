@@ -282,7 +282,7 @@ Findings: (i) dropping either FPN scale hurts both backbones — keep all 640-d;
 
 ### Encoder throughput benchmark
 
-Pure-GPU `forward_image` throughput at batch 32, 1024×1024 input, H100 80GB. Script: `bash run_encoder_benchmark.sh`. Synthetic input pre-allocated on the device — no video decode, no preprocessing, isolates encoder work from I/O.
+Pure-GPU `forward_image` throughput at batch 32, 1024×1024 input, H100 80GB. Script: `python3 benchmark.py --skip_pipeline`. Synthetic input pre-allocated on the device — no video decode, no preprocessing, isolates encoder work from I/O.
 
 | Variant | Config             | fps    | ms/frame | Peak GB | Speedup |
 |---------|--------------------|-------:|---------:|--------:|--------:|
@@ -298,6 +298,31 @@ Pure-GPU `forward_image` throughput at batch 32, 1024×1024 input, H100 80GB. Sc
 - `torch.compile` (`mode="default"`) on top of bf16 gives another ~1.5–1.7×, total ~3× over the fp32 baseline. Cost: ~30s of graph capture at startup.
 - **Hiera-S vs Hiera-L, best config vs best config: 3.57×.** The earlier "~5×" estimate (based on FLOPs ratio) was too optimistic — H100 is latency-bound at this batch size, so wall-clock ratio is closer to ~3.5× than the raw FLOPs would suggest.
 - Throughput here is the encoder alone. End-to-end extraction throughput including `cv2.set/read/resize` will be lower since video I/O does not benefit from bf16 or compile.
+
+### End-to-end pipeline optimisation (`localize_endobag.py --fast`)
+
+The encoder benchmark above measures the GPU in isolation. The real localisation pipeline is bounded by `min(decode, encoder)` *and* by serial CPU work between batches. To exercise the full path, `localize_endobag.py` accepts a `--fast` flag that bundles four optimisations together (each is also individually toggleable):
+
+| Flag                | What it does |
+|---------------------|--------------|
+| `--use_bf16`        | wraps `forward_image` in `torch.autocast("cuda", dtype=torch.bfloat16)` |
+| `--use_compile`     | `torch.compile(forward_image, mode="default")` + 5-iter warmup |
+| `--num_workers 4`   | DataLoader with an `IterableDataset` that splits the frame-index list into 4 contiguous chunks; each worker does one initial seek then sequential `cv2.grab()`/`cv2.read()` — matches the baseline's access pattern but in parallel |
+| `--gpu_classifier`  | runs the logistic regression on GPU (`feats @ w + b → sigmoid`) so features never leave the device and sklearn never blocks the main thread between batches |
+
+Plus the default `--batch_size` was raised from 8 to 32 (amortises per-batch CPU/sync overhead).
+
+**Measured end-to-end (Hiera-S, case 213 hold-out, 0.5 fps sampling, H100):**
+
+| Config | End-to-end fps | Wall-clock | Speedup |
+|---|---:|---:|---:|
+| Baseline (inline loop, fp32, sklearn on CPU, batch 8) | 21.22 | 202s | 1.00× |
+| **`--fast` (bf16 + compile + nw=4 + GPU clf + batch 32)** | **38.46** | **112s** | **1.81×** |
+
+Selected segment was identical between the two runs (case 213: 4096–4110s, +3s start error).
+
+**Why only 1.8× when the components were ~3× each?**
+Amdahl's law on the pipeline composition. The encoder benchmark assumed features stay on GPU forever; the decode benchmark assumed an instant consumer. In practice each batch passes through CPU work between GPU launches (sklearn `predict_proba`, numpy z-score, IPC of the [B, 3, 1024, 1024] tensor from worker to main, tqdm/list overhead). Even after `--gpu_classifier` removes the sklearn step and the `.cpu()` sync, the worker→main IPC and per-batch fixed costs remain. Headroom estimate: encoder is at 38/471 ≈ 8% of its peak, so the next ~2× would come from bigger batches and/or moving decode to NVDEC (TorchCodec) — see `install_torchcodec_isolated.sh`.
 
 ### Results
 
@@ -328,7 +353,8 @@ Pure-GPU `forward_image` throughput at batch 32, 1024×1024 input, H100 80GB. Sc
 | `train_endobag_classifier.py` | LOCO-CV classifier evaluation for endobagging |
 | `localize_endobag.py` | Full-video endobagging event localisation |
 | `run_endobag_size_ablation.sh` | End-to-end ablation: Hiera-S extraction + LOCO-CV across `{large, small} × {all, fpn1, fpn2}` |
-| `benchmark_encoder.py` / `run_encoder_benchmark.sh` | Pure-GPU `forward_image` throughput across `{large, small} × {fp32, bf16, bf16+compile}` |
+| `benchmark.py` | Encoder forward + end-to-end pipeline benchmarks (cv2 serial, cv2+DataLoader, TorchCodec if installed) |
+| `install_torchcodec_isolated.sh` | Optional: `--target` pip install of TorchCodec into `.torchcodec_env/` so the container's torch is untouched |
 
 ---
 

@@ -8,7 +8,8 @@ There are three distinct workflows depending on what you are tracking:
 
 | Workflow | Annotate with | Run with | Use when |
 |----------|--------------|----------|----------|
-| Brush mask — single or multiple structures | `annotate_brush.html` | `track_nerves.py` / `track_nerves_ffmpeg.py` / `track_nerves_multi.py` | Nerve bundles; anything where you want to paint a freeform mask |
+| Brush mask — SBS 3D video (recommended) | `annotate_brush.html` | `track_nerves_ffmpeg_v2.py` | Nerve bundles in 3D side-by-side video |
+| Brush mask — plain 2D video | `annotate_brush_2d.html` | `track_nerves_2d.py` | Nerve bundles in 2D (non-SBS) video |
 | Box — multiple structure types, one instance each | `annotate_multi.html` | `track_multi_structure.py` | VAS, seminals, retrotrigonal layer — one of each visible at a time |
 | Box — multiple instances of the same structure | `annotate_instances.html` | `track_instances.py` | Both VAS simultaneously, both seminals simultaneously, etc. |
 
@@ -19,8 +20,12 @@ There are three distinct workflows depending on what you are tracking:
 | File | Role |
 |------|------|
 | `annotate_brush.html` | Paint brush masks on keyframes; exports JSON with base64 mask PNGs. |
-| `track_nerves.py` | Propagates brush-mask annotations. OpenCV frame reading (MP4). |
-| `track_nerves_ffmpeg.py` | Same as above but uses ffmpeg seeking. **Use for MOV files.** |
+| `annotate_brush_2d.html` | Same as above, just relabelled for 2D (non-SBS) source video. Drawing and export are identical; only the export-filename suffix differs (`_mask_tracks_2d.json`). |
+| `track_nerves.py` | Propagates brush-mask annotations. OpenCV frame reading (MP4). Has fps-ratio bugs — superseded by `track_nerves_ffmpeg_v2.py`. |
+| `track_nerves_ffmpeg.py` | First ffmpeg variant. Still has the renderer fps-ratio misalignment described below — superseded by `_v2`. Kept for reference. |
+| `track_nerves_ffmpeg_old.py` | Original ffmpeg variant. Same renderer bug; mask-saving stride bug also present. Kept for reference / diff against `_v2`. |
+| `track_nerves_ffmpeg_v2.py` | **Recommended for SBS 3D video.** Fixes mask sub-chunk sizing, mask-saving stride, AND renderer–frame alignment when `fps_actual != fps_ann` (see below). |
+| `track_nerves_2d.py` | **Recommended for plain 2D video.** Same fixes as `_v2`, with all SBS / eye-cropping logic removed. |
 | `track_nerves_multi.py` | Like `track_nerves.py` but accepts multiple JSON files, loads SAM2 once. |
 | `annotate_multi.html` | Draw one bounding box per structure type per keyframe; exports JSON. |
 | `track_multi_structure.py` | Propagates box annotations; one instance per track, one SAM2 object per segment. |
@@ -46,17 +51,26 @@ Open directly in Chrome/Firefox (no server needed).
 5. Set the track start/end frame range.
 6. Export → saves a `.json` with frame indices, brush mask PNGs (base64), colors, and labels.
 
-### Propagation: `track_nerves.py` / `track_nerves_ffmpeg.py`
+### Propagation: `track_nerves_ffmpeg_v2.py` (SBS 3D) / `track_nerves_2d.py` (plain 2D)
 
 ```bash
-python3 track_nerves_ffmpeg.py \          # or track_nerves.py for MP4
-  --video   aua_videos/case_X.mov \
+# SBS 3D — annotate on the chosen eye, propagate that eye, mirror the overlay to the other eye
+python3 track_nerves_ffmpeg_v2.py \
+  --video   aua_videos/case_X.mp4 \
   --tracks  aua_boxes/case_X_mask_tracks.json \
   --sbs_eye left \
-  --frame_step 1 \
-  --mask_alpha 0.30 \
+  --mask_alpha 0.10 \
+  --render_from_first_track
+
+# Plain 2D — full frame in, full frame out
+python3 track_nerves_2d.py \
+  --video   aua_videos/case_2d.mp4 \
+  --tracks  aua_boxes/case_2d_mask_tracks_2d.json \
+  --mask_alpha 0.10 \
   --render_from_first_track
 ```
+
+Both default to pure green at α=0.10 — passing `--mask_color` overrides this. The older `track_nerves.py` / `track_nerves_ffmpeg.py` / `_old.py` variants are kept for reference but have the fps-ratio bugs described at the bottom of this file.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -188,6 +202,72 @@ To use on a different clip, edit `VIDEO_CLIP` and `OUTPUT_DIR` at the top of the
 ## Path note for scripts in this folder
 
 Scripts that build paths to checkpoints or assets relative to `SAM3_DIR` use `os.path.dirname(os.path.dirname(...))` to resolve to `sam3/` (the parent of `aua_tracking/`). This affects `track_from_boxes_finetuned.py` and `heatmap_fast.py`. Scripts that only use `SAM3_DIR` for `sys.path.insert` (all others) are unaffected by the folder depth.
+
+---
+
+## New scripts: Ureter, Obturator, and other structures
+
+`track_nerves_ffmpeg_v2.py`, `track_nerves_2d.py`, `track_nerves_ffmpeg_old.py`, `benchmark_sam2_frames.py`, and `annotate_brush_2d.html` were created to extend the annotation and tracking workflow beyond nerve bundles — specifically to handle structures such as the **ureter**, **obturator nerve**, and similar anatomy encountered during nerve-sparing RARP.
+
+`track_nerves_ffmpeg_old.py` is the original ffmpeg variant kept for reference / diff. `track_nerves_ffmpeg_v2.py` and `track_nerves_2d.py` are the recommended scripts for SBS 3D and plain 2D video respectively — they carry two bug fixes relative to `track_nerves_ffmpeg.py`:
+
+**FIX 1 — Sub-chunk sizing in actual frames, not annotation frames.**
+The old script split by `MAX_CACHED_FRAMES` annotation frames. For a 2× fps ratio this loaded ~2× as many actual frames as expected, filling GPU memory and causing OOM. This version uses `MAX_ACTUAL_FRAMES` (actual video frames) and derives the annotation-frame chunk size as:
+```
+ann_chunk_size = round(MAX_ACTUAL_FRAMES * fps_ann / fps_actual)
+```
+so every sub-chunk encodes at most `MAX_ACTUAL_FRAMES` actual frames regardless of the fps ratio.
+
+**FIX 2 — `global_idx` scaled by fps ratio.**
+The old script saved mask `k` at annotation frame `sub_start + k`. With `fps_actual > fps_ann` the loader returns more actual frames than annotation frames in the sub-chunk, so later sub-chunks overwrote earlier ones with masks from different video times, causing visible drift at each sub-chunk boundary. The fix:
+```
+global_idx = sub_start + round(local_idx * frame_step * fps_ann / fps_actual)
+```
+maps actual-frame indices back to annotation-frame indices correctly. When `fps_actual == fps_ann` the ratio is 1.0 and behaviour is identical to the old script.
+
+`benchmark_sam2_frames.py` measures SAM2 encoder throughput on a set of frames — used to profile the annotation pipeline and verify that sub-chunk sizing changes did not regress encoding speed.
+
+---
+
+## The fps-ratio rendering bug (fixed in `_v2` / `_2d`)
+
+This bug bit us on videos where the source fps differs from the annotation fps — e.g. a 59.94 fps video annotated at 30 fps (`fps_ratio ≈ 2`). The old scripts (`track_nerves_ffmpeg.py`, `track_nerves_ffmpeg_old.py`) produced misaligned overlays — sometimes silently for the first track and visibly garbage for later tracks.
+
+### What was going wrong
+
+Two independent issues, in two different places:
+
+**1. Mask-saving stride (fixed in `_v2`).**
+The propagation loader pulls actual frames from ffmpeg; with `fps_actual = 59.94` and `fps_ann = 30`, a 250-ann-frame sub-chunk loads ~500 actual frames. The old code saved each propagated mask at `global_idx = sub_start + local_idx`, treating an *actual*-frame index as if it were an *annotation*-frame index. The masks therefore covered twice the annotation range they should have, and at sub-chunk boundaries later sub-chunks overwrote earlier ones with masks from different video times.
+
+Fix: `global_idx = sub_start + round(local_idx * fps_ann / fps_actual)` — actual indices mapped back to annotation indices before saving.
+
+**2. Renderer–frame misalignment (the bug this whole writeup is about).**
+The render loop iterated over **annotation-frame indices**:
+
+```python
+for fidx in range(render_start, render_end):
+    frame = next(_render_gen, None)        # consumes one ACTUAL frame from ffmpeg
+    mask = mask_cache.get_mask_at(fidx)    # indexed by ann frame
+```
+
+But each iteration consumes one **actual** frame from the ffmpeg pipe (which yields at source fps). So after K iterations the underlying video had advanced by `K/fps_actual` seconds (≈ `K/2` annotation frames at fps_ratio=2), but the mask lookup used `fidx = render_start + K` (K annotation frames). The mask "ran" at twice the speed of the video content underneath it.
+
+In `_old` this cancelled with bug #1 — both indexing schemes were off by the same factor — but **only** when a track's `sub_start` equalled `render_start`. That's why track 0 looked fine (its `sub_start == render_start`) while track 1 (starting later in the video) produced garbage. `_v2` fixed bug #1 in mask saving, which exposed bug #2 in rendering for *all* tracks.
+
+Fix: iterate over actual frames and compute a fractional annotation-frame coordinate per frame:
+
+```python
+n_render_actual = int(round((render_end - render_start) * fps / fps_ann))
+for out_idx in range(n_render_actual):
+    frame = next(_render_gen, None)
+    ann_fidx = render_start + out_idx * fps_ann / fps   # float
+    mask = mask_cache.get_mask_at(ann_fidx)             # bisect handles floats
+```
+
+`LazyMaskCache.get_mask_at` already does linear interpolation between adjacent keyframes and accepts any numeric index, so no other change was needed.
+
+**Symptoms in the wild:** the overlay appears to drift, "rush ahead" of the underlying anatomy, or paint masks during black/gap frames where nothing should be highlighted. If you see this on `_v2` output: check `fps_ann` in the JSON matches what you annotated at, and re-run with `_v2` or `_2d`.
 
 ---
 

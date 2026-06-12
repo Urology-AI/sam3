@@ -2,15 +2,15 @@
 """
 train_multiclass_classifier.py
 ==============================
-LOCO-CV evaluation of the 13-class softmax phase classifier on SAM2 features.
+LOCO-CV evaluation of the 11-class softmax phase classifier on SAM2 features.
 
 This is a sanity check before bothering with full-video localisation: do the
-backbone features actually carry phase-level signal across all 13 classes?
+backbone features actually carry phase-level signal across all 11 classes?
 
 Inputs:  .npz files produced by extract_multiclass_features.py.
-Each contains: features [N, 640], labels [N] int 0..12, sample_weights [N] float.
+Each contains: features [N, 640], labels [N] int 0..10, sample_weights [N] float.
 
-Output: per-class AUC-ROC (one-vs-rest), top-1 accuracy, macro F1, and a 13×13
+Output: per-class AUC-ROC (one-vs-rest), top-1 accuracy, macro F1, and an 11×11
 confusion matrix saved as PNG.
 
 Usage
@@ -102,7 +102,7 @@ def loco_cv(cases, C=1.0):
         # multi_class="multinomial" with lbfgs is sklearn's default softmax logreg
         # for >2 classes; class_weight="balanced" multiplies with sample_weight.
         clf = LogisticRegression(
-            C=C, max_iter=2000, class_weight="balanced",
+            C=C, max_iter=300, tol=1e-3, class_weight="balanced",
             solver="lbfgs", random_state=42,
         )
         clf.fit(X_tr_s, y_tr, sample_weight=w_tr)
@@ -196,7 +196,7 @@ def save_confusion(fold_results, out_png):
     ax.set_yticklabels(CLASS_NAMES, fontsize=8)
     ax.set_xlabel("Predicted")
     ax.set_ylabel("True")
-    ax.set_title("13-class LOCO confusion matrix (row-normalised)")
+    ax.set_title("11-class LOCO confusion matrix (row-normalised)")
     for i in range(NUM_CLASSES):
         for j in range(NUM_CLASSES):
             v = cm_norm[i, j]

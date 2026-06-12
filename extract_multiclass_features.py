@@ -2,26 +2,37 @@
 """
 extract_multiclass_features.py
 ==============================
-Extract SAM2 ViT backbone features for the 13-class surgical phase classifier.
+Extract SAM2 ViT backbone features for the 11-class surgical phase classifier.
 
-Class layout (state-machine-aligned, 11 classes)
-------------------------------------------------
+Class layout (11 emission classes, used by the softmax)
+-------------------------------------------------------
   0  pre_catheter_pull        (bladder drop / mobilisation)
   1  catheter_pull
   2  post_catheter_pull
   3  posterior_cut
   4  post_posterior_cut
-  5  vas_cut                  (vas_cut_1 + vas_cut_2 merged — left vs right not
-                               visually distinguishable from the features)
-  6  post_vas_cut             (seminal + posterior plane + urethral prep)
+  5  vas_cut                  (shared class for vas_cut_1 AND vas_cut_2 — left
+                               vs right is not visually distinguishable from
+                               the features, so the softmax learns a single
+                               "vas cutting" pattern)
+  6  post_vas_cut             (seminal + posterior plane + urethral prep —
+                               also the visual signature of the gap BETWEEN
+                               the two vas cuts)
   7  apical_cut
   8  post_apical_cut
   9  endobag
  10  post_endobag             (closure)
 
-`seminal_peeling` is intentionally ignored — only 2/7 cases have it.
-`vas_cut_1` and `vas_cut_2` rows in the CSV are merged into one `vas_cut` window
-spanning [min(start), max(end)].
+`seminal_peeling` is intentionally ignored — only a minority of cases have it.
+
+vas_cut_1 and vas_cut_2 CSV rows are both labelled with class 5 (vas_cut) and
+kept as separate event windows. The gap between them (if present) gets the
+post_vas_cut interphase label (class 6). The 11-state Viterbi in
+localize_multiclass.py produces a single vas_cut firing per case.
+
+Only cases that have ALL 5 required events (catheter_pull, posterior_cut,
+vas_cut (≥1), apical_cut, endobag) are processed — incomplete cases are
+skipped with a warning.
 
 Sample plan, per case
 ---------------------
@@ -82,7 +93,7 @@ IMG_SIZE = 1024
 IMG_MEAN = torch.tensor([0.485, 0.456, 0.406])[:, None, None]
 IMG_STD  = torch.tensor([0.229, 0.224, 0.225])[:, None, None]
 
-# Canonical event order (matches the state machine in localize_multiclass.py)
+# Canonical event order (matches the 11-state machine in localize_multiclass.py)
 EVENT_SEQUENCE = [
     "catheter_pull",
     "posterior_cut",
@@ -90,6 +101,8 @@ EVENT_SEQUENCE = [
     "apical_cut",
     "endobag",
 ]
+# Cases missing any of these (at least 1 vas_cut) are skipped entirely.
+REQUIRED_EVENTS = frozenset(EVENT_SEQUENCE)
 # Even indices are interphase states, odd indices are event states.
 #   pre_catheter=0, catheter=1, post_catheter=2, posterior=3, post_posterior=4, …
 EVENT_TO_CLASS = {name: 2 * i + 1 for i, name in enumerate(EVENT_SEQUENCE)}
@@ -114,39 +127,34 @@ def parse_all_events(path):
     """
     Returns dict: case_id (str) → sorted list of (event_name, start_s, end_s).
     Drops rows whose event is not in EVENT_SEQUENCE or in VAS_CSV_NAMES
-    (seminal_peeling is dropped entirely). The two raw `vas_cut_1` and
-    `vas_cut_2` rows are merged into one `vas_cut` window per case:
-        [min(start_1, start_2), max(end_1, end_2)]
+    (seminal_peeling is dropped entirely).
+
+    vas_cut_1 and vas_cut_2 CSV rows are each renamed to "vas_cut" but kept
+    as SEPARATE entries (not merged) so build_sample_plan emits two distinct
+    vas event windows with class 5 and the gap between them gets the
+    post_vas_cut interphase label (class 6).
     """
-    raw = {}  # case_id → {event_name → [(s, e), …]}
+    rows = []
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
             name = row["event"].strip()
-            if name not in EVENT_TO_CLASS and name not in VAS_CSV_NAMES:
+            # Map both vas CSV rows to the shared "vas_cut" class name,
+            # but DO NOT merge their windows.
+            if name in VAS_CSV_NAMES:
+                name = "vas_cut"
+            if name not in EVENT_TO_CLASS:
                 continue
             fname   = row["filename"].strip()
             case_id = fname.replace("case_", "").replace("_clipped.mp4", "")
             s = float(row["start_sec"])
             e = float(row["end_sec"])
-            raw.setdefault(case_id, {}).setdefault(name, []).append((s, e))
+            rows.append((case_id, name, s, e))
 
     by_case = {}
-    for cid, evdict in raw.items():
-        merged = []
-        # Non-vas events pass through directly.
-        for n, intervals in evdict.items():
-            if n in VAS_CSV_NAMES:
-                continue
-            for s, e in intervals:
-                merged.append((n, s, e))
-        # Vas merge: union of all vas_cut_1 and vas_cut_2 windows.
-        vas_intervals = evdict.get("vas_cut_1", []) + evdict.get("vas_cut_2", [])
-        if vas_intervals:
-            vs = min(s for s, _ in vas_intervals)
-            ve = max(e for _, e in vas_intervals)
-            merged.append(("vas_cut", vs, ve))
-        merged.sort(key=lambda x: x[1])
-        by_case[cid] = merged
+    for cid, name, s, e in rows:
+        by_case.setdefault(cid, []).append((name, s, e))
+    for cid in by_case:
+        by_case[cid].sort(key=lambda x: x[1])
     return by_case
 
 
@@ -429,19 +437,21 @@ def main():
         keep = set(args.cases.split(","))
         by_case = {k: v for k, v in by_case.items() if k in keep}
 
-    # Confirm every kept case has all 6 events — that's the contract for the 13-state
-    # decoder. Cases missing one are flagged so the user can decide.
-    missing_report = []
+    # Filter: only process cases that have all 5 required events (at least 1 vas_cut).
+    complete = {}
+    skipped  = []
     for cid, evs in sorted(by_case.items()):
-        names = {n for n, _, _ in evs}
-        missing = [n for n in EVENT_SEQUENCE if n not in names]
+        present = {n for n, _, _ in evs}
+        missing = REQUIRED_EVENTS - present
         if missing:
-            missing_report.append((cid, missing))
-    if missing_report:
-        print("\n[warn] cases missing one or more of the 6 expected events:")
-        for cid, miss in missing_report:
+            skipped.append((cid, sorted(missing)))
+        else:
+            complete[cid] = evs
+    if skipped:
+        print("\n[skip] cases missing required events (excluded from extraction):")
+        for cid, miss in skipped:
             print(f"        case {cid}: missing {miss}")
-        print("       (these cases will still extract — interphases will span the gap)")
+    by_case = complete
 
     print(f"\nCases to process: {sorted(by_case.keys())}\n")
 

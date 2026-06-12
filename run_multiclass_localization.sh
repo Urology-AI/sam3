@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_multiclass_localization.sh
 # ==============================
-# End-to-end driver for the 13-class softmax + Viterbi pipeline:
+# End-to-end driver for the 11-class softmax + Viterbi pipeline:
 #   1. extract_multiclass_features.py  (per-case SAM2 features + sample weights)
 #   2. train_multiclass_classifier.py   (LOCO sanity-check metrics)
 #   3. localize_multiclass.py           (LOCO full-video sweep + per-event errors)

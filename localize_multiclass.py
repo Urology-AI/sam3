@@ -2,23 +2,25 @@
 """
 localize_multiclass.py
 ======================
-LOCO-CV full-video localisation of all 6 surgical milestones using the
-13-class softmax + Viterbi state machine.
+LOCO-CV full-video localisation of all 5 surgical milestones using an
+11-class softmax + 11-state Viterbi (states map 1:1 to emission classes).
 
 For each held-out case:
   1. Train multinomial logreg on the other cases (with sample_weight from
      extract_multiclass_features.py — hard negatives weighted up).
   2. Run SAM2 backbone over the full held-out video at --sample_fps.
-  3. Compute per-frame 13-d log-probabilities, apply rolling mean smoothing
+  3. Compute per-frame 11-d log-probabilities, apply rolling mean smoothing
      per class.
-  4. Run Viterbi over the 13-state machine with 3 skip edges
-     (catheter→posterior, vas1→vas2, apical→endobag).
-  5. Derive (start_s, end_s) for each of the 6 milestone events from the
+  4. Run Viterbi over the 11-state machine with 2 skip edges
+     (catheter→posterior, apical→endobag).
+  5. Derive (start_s, end_s) for each of the 5 milestone events from the
      decoded state sequence and report errors against the CSV annotations.
 
 State machine (matches CLASS_NAMES below). Allowed transitions:
-  self-loop on every state; advance by +1 from every state; plus the 3 skip
-  edges 1→3, 5→7, 9→11.
+  self-loop on every state; advance by +1 from every state; plus the 2 skip
+  edges 1→3, 7→9.
+
+Only cases that have all 5 required events in the CSV are run.
 
 Usage
 -----
@@ -65,7 +67,7 @@ IMG_SIZE = 1024
 IMG_MEAN = torch.tensor([0.485, 0.456, 0.406])[:, None, None]
 IMG_STD  = torch.tensor([0.229, 0.224, 0.225])[:, None, None]
 
-# Canonical class layout — kept in sync with extract / train scripts.
+# ── 11 emission classes (the softmax output dimension) ───────────────────────
 NUM_CLASSES = 11
 CLASS_NAMES = [
     "pre_catheter_pull", "catheter_pull",
@@ -75,51 +77,72 @@ CLASS_NAMES = [
     "post_apical_cut",   "endobag",
     "post_endobag",
 ]
-EVENT_CLASSES = [1, 3, 5, 7, 9]
-EVENT_NAMES   = {1: "catheter_pull", 3: "posterior_cut", 5: "vas_cut",
-                 7: "apical_cut", 9: "endobag"}
-# Skip edges allow Viterbi to bypass short/unreliable interphases.
-# vas_cut now has no neighbour to skip (single sustained event).
-SKIP_EDGES    = [(1, 3), (7, 9)]
-# Raw CSV event names merged into the single `vas_cut` class.
+
+# ── 11 Viterbi states (1:1 mapping to emission classes) ──────────────────────
+NUM_STATES = 11
+STATE_TO_CLASS = list(range(NUM_STATES))
+STATE_NAMES = CLASS_NAMES   # identical
+assert len(STATE_TO_CLASS) == NUM_STATES == len(STATE_NAMES)
+
+# Event STATES (used for per-event reporting + optional anchor bonus).
+# Keys = state indices, values = the GT event name they should match.
+EVENT_STATE_NAMES = {
+    1: "catheter_pull",
+    3: "posterior_cut",
+    5: "vas_cut",
+    7: "apical_cut",
+    9: "endobag",
+}
+EVENT_STATES = list(EVENT_STATE_NAMES.keys())
+EVENT_REPORT_ORDER = ["catheter_pull", "posterior_cut",
+                      "vas_cut", "apical_cut", "endobag"]
+
+# Skip edges: stay-or-advance graph plus these shortcuts.
+SKIP_EDGES = [
+    (1, 3),    # catheter_pull → posterior_cut (skip post_catheter_pull)
+    (7, 9),    # apical_cut → endobag (skip post_apical_cut)
+]
+
+# Raw CSV event names that map to the shared vas_cut class.
 VAS_CSV_NAMES = ("vas_cut_1", "vas_cut_2")
 
 
 # ── CSV parsing ────────────────────────────────────────────────────────────────
 
+REQUIRED_EVENTS = frozenset(EVENT_REPORT_ORDER)
+
+
 def parse_all_events(path):
-    """Returns dict: case_id → {event_name: (start_s, end_s)}.
-    `vas_cut_1` and `vas_cut_2` are merged into one `vas_cut` window per case
-    (same rule as extract_multiclass_features.py).
-    seminal_peeling is dropped."""
-    accepted = set(EVENT_NAMES.values())   # 5 milestones incl. vas_cut
-    raw = {}
+    """Returns dict: case_id → {event_name: (start_s, end_s)} for the 5
+    milestone events. vas_cut_1 and vas_cut_2 are merged into a single
+    'vas_cut' entry (union of their windows). Cases missing any required
+    event are excluded."""
+    accepted = set(EVENT_REPORT_ORDER) | set(VAS_CSV_NAMES)
+    by_case = {}
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
             name = row["event"].strip()
-            if name not in accepted and name not in VAS_CSV_NAMES:
+            if name not in accepted:
                 continue
+            if name in VAS_CSV_NAMES:
+                name = "vas_cut"
             cid = row["filename"].strip().replace("case_", "").replace("_clipped.mp4", "")
             s = float(row["start_sec"])
             e = float(row["end_sec"])
-            raw.setdefault(cid, {}).setdefault(name, []).append((s, e))
-
-    by_case = {}
-    for cid, evdict in raw.items():
-        out = {}
-        for n, intervals in evdict.items():
-            if n in VAS_CSV_NAMES:
-                continue
-            # Multi-interval events are flattened to one window (we never
-            # double-annotate non-vas events, but defensively take min/max).
-            s = min(s for s, _ in intervals); e = max(e for _, e in intervals)
-            out[n] = (s, e)
-        vas_intervals = evdict.get("vas_cut_1", []) + evdict.get("vas_cut_2", [])
-        if vas_intervals:
-            out["vas_cut"] = (min(s for s, _ in vas_intervals),
-                              max(e for _, e in vas_intervals))
-        by_case[cid] = out
-    return by_case
+            if name in by_case.get(cid, {}):
+                old_s, old_e = by_case[cid][name]
+                by_case[cid][name] = (min(s, old_s), max(e, old_e))
+            else:
+                by_case.setdefault(cid, {})[name] = (s, e)
+    # Drop cases missing any required event.
+    complete = {}
+    for cid, evs in by_case.items():
+        if REQUIRED_EVENTS.issubset(evs):
+            complete[cid] = evs
+        else:
+            missing = sorted(REQUIRED_EVENTS - set(evs))
+            print(f"  [skip] case {cid}: missing {missing}")
+    return complete
 
 
 # ── Feature loading ────────────────────────────────────────────────────────────
@@ -152,7 +175,7 @@ def train_classifier(cases_dict, hold_out_id, C=1.0):
     X_tr_s = (X_tr - m) / s
 
     clf = LogisticRegression(
-        C=C, max_iter=2000, class_weight="balanced",
+        C=C, max_iter=300, tol=1e-3, class_weight="balanced",
         solver="lbfgs", random_state=42,
     )
     clf.fit(X_tr_s, y_tr, sample_weight=w_tr)
@@ -284,7 +307,7 @@ def pad_proba(proba, classes_):
 def infer_full_video(video_path, model, clf, mean, std,
                      sample_fps, batch_size, sbs_eye, device,
                      use_bf16=False, num_workers=0, gpu_classifier=False):
-    """Returns (times_s [T], log_probs [T, 13])."""
+    """Returns (times_s [T], log_probs [T, 11])."""
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -405,46 +428,47 @@ def smooth_log_probs(log_probs, window_frames):
 
 def viterbi_decode(log_emit, alpha=0.0, skip_cost=0.0):
     """
-    log_emit:   (T, 13) log emission probabilities (already smoothed)
-    alpha:      log-prob bonus added to event-class emissions (anchors decoder
+    log_emit:   (T, NUM_CLASSES=11) log emission probabilities (already smoothed)
+    alpha:      log-prob bonus added to event-state emissions (anchors decoder
                 to high-confidence event firings)
     skip_cost:  log-prob added when taking a skip edge (default 0 — purely
                 emission-driven; negative values discourage skips)
 
     Returns:
-      state_seq (T,) int32 — path through the state machine, monotone non-decreasing.
+      state_seq (T,) int32 — path through the NUM_STATES=11 state machine,
+      monotone non-decreasing.
     """
-    T, K = log_emit.shape
-    assert K == NUM_CLASSES
+    T, K_cls = log_emit.shape
+    assert K_cls == NUM_CLASSES
 
-    # Build log-transition matrix: -inf everywhere except allowed edges.
-    log_trans = np.full((K, K), -np.inf, dtype=np.float64)
-    for i in range(K):
-        log_trans[i, i] = 0.0                         # stay
-        if i + 1 < K:
-            log_trans[i, i + 1] = 0.0                 # advance by 1
-    for fr, to in SKIP_EDGES:
-        log_trans[fr, to] = skip_cost                 # skip the unstable interphase
-
-    emit = log_emit.astype(np.float64).copy()
+    # Map class log-probs to state log-probs via STATE_TO_CLASS (1:1 here).
+    state_emit = log_emit[:, STATE_TO_CLASS].astype(np.float64).copy()  # (T, NUM_STATES)
     if alpha != 0.0:
-        for s in EVENT_CLASSES:
-            emit[:, s] += alpha
+        for s in EVENT_STATES:
+            state_emit[:, s] += alpha
 
-    dp = np.full((T, K), -np.inf, dtype=np.float64)
-    bp = np.zeros((T, K), dtype=np.int32)
+    # Build log-transition matrix over states: -inf everywhere except allowed edges.
+    log_trans = np.full((NUM_STATES, NUM_STATES), -np.inf, dtype=np.float64)
+    for i in range(NUM_STATES):
+        log_trans[i, i] = 0.0                       # stay
+        if i + 1 < NUM_STATES:
+            log_trans[i, i + 1] = 0.0               # advance by 1
+    for fr, to in SKIP_EDGES:
+        log_trans[fr, to] = skip_cost               # skip-edge (still allowed, with cost)
+
+    dp = np.full((T, NUM_STATES), -np.inf, dtype=np.float64)
+    bp = np.zeros((T, NUM_STATES), dtype=np.int32)
 
     # Force start at state 0 (every case begins in pre_catheter_pull).
-    dp[0, 0] = emit[0, 0]
+    dp[0, 0] = state_emit[0, 0]
 
     for t in range(1, T):
-        scores    = dp[t - 1, :, None] + log_trans     # (K, K)
+        scores    = dp[t - 1, :, None] + log_trans     # (NUM_STATES, NUM_STATES)
         best_prev = np.argmax(scores, axis=0)
-        dp[t]     = scores[best_prev, np.arange(K)] + emit[t]
+        dp[t]     = scores[best_prev, np.arange(NUM_STATES)] + state_emit[t]
         bp[t]     = best_prev
 
-    # No end-state constraint — allow ending anywhere (some videos may end
-    # before reaching post_endobag).
+    # No end-state constraint — allow ending anywhere.
     path = np.zeros(T, dtype=np.int32)
     path[-1] = int(np.argmax(dp[-1]))
     for t in range(T - 1, 0, -1):
@@ -453,16 +477,15 @@ def viterbi_decode(log_emit, alpha=0.0, skip_cost=0.0):
 
 
 def state_seq_to_event_windows(state_seq, times_s):
-    """For each event class, return (start_s, end_s) of its contiguous
-    occupancy in the path. Returns None for events that never appear (skipped)."""
+    """Returns dict[event_name] → (start_s, end_s) or None."""
     out = {}
-    for cls in EVENT_CLASSES:
-        mask = (state_seq == cls)
+    for state_idx, name in EVENT_STATE_NAMES.items():
+        mask = (state_seq == state_idx)
         if not mask.any():
-            out[cls] = None
+            out[name] = None
         else:
             idxs = np.where(mask)[0]
-            out[cls] = (float(times_s[idxs[0]]), float(times_s[idxs[-1]]))
+            out[name] = (float(times_s[idxs[0]]), float(times_s[idxs[-1]]))
     return out
 
 
@@ -482,21 +505,26 @@ def save_plot(times_s, log_probs_smooth, state_seq, gt_windows, pred_windows,
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 8), sharex=True,
                                     gridspec_kw=dict(height_ratios=[3, 1]))
 
-    # Top: probability traces, only the 6 event classes (interphases too noisy
-    # to all overlay)
     cmap = plt.get_cmap("tab10")
-    for i, cls in enumerate(EVENT_CLASSES):
+    plot_event_classes = [(1, "catheter_pull"), (3, "posterior_cut"),
+                          (5, "vas_cut"),       (7, "apical_cut"),
+                          (9, "endobag")]
+    for i, (cls, label) in enumerate(plot_event_classes):
         ax1.plot(times_s, probs[:, cls], color=cmap(i), linewidth=1.2,
-                 label=EVENT_NAMES[cls])
+                 label=label)
 
-    # GT vs predicted spans for each event
-    for i, cls in enumerate(EVENT_CLASSES):
-        gt = gt_windows.get(EVENT_NAMES[cls])
+    name_to_color = {
+        "catheter_pull": cmap(0), "posterior_cut": cmap(1),
+        "vas_cut":       cmap(2),
+        "apical_cut":    cmap(3), "endobag":       cmap(4),
+    }
+    for name, col in name_to_color.items():
+        gt = gt_windows.get(name)
         if gt is not None:
-            ax1.axvspan(gt[0], gt[1], color=cmap(i), alpha=0.20)
-        pr = pred_windows.get(cls)
+            ax1.axvspan(gt[0], gt[1], color=col, alpha=0.20)
+        pr = pred_windows.get(name)
         if pr is not None:
-            ax1.axvspan(pr[0], pr[1], color=cmap(i), alpha=0.45,
+            ax1.axvspan(pr[0], pr[1], color=col, alpha=0.45,
                         ymin=0.92, ymax=1.0)
 
     ax1.set_ylabel("P(event)")
@@ -507,12 +535,12 @@ def save_plot(times_s, log_probs_smooth, state_seq, gt_windows, pred_windows,
                                    functions=(lambda x: x/60, lambda x: x*60))
     ax2_top.set_xlabel("Time (min)")
 
-    # Bottom: Viterbi state assignment
+    # Bottom: Viterbi state assignment over the 11-state machine.
     ax2.plot(times_s, state_seq, drawstyle="steps-post", color="black",
              linewidth=1.0)
-    ax2.set_yticks(range(NUM_CLASSES))
-    ax2.set_yticklabels(CLASS_NAMES, fontsize=7)
-    ax2.set_ylim(-0.5, NUM_CLASSES - 0.5)
+    ax2.set_yticks(range(NUM_STATES))
+    ax2.set_yticklabels(STATE_NAMES, fontsize=7)
+    ax2.set_ylim(-0.5, NUM_STATES - 0.5)
     ax2.set_xlabel("Time (s)")
     ax2.set_ylabel("Viterbi state")
     ax2.grid(axis="y", alpha=0.3)
@@ -538,8 +566,7 @@ def run_case(hold_out_id, cases_dict, all_gt, sam2_model, args, device):
     gt = all_gt[hold_out_id]
     print(f"\n{'='*70}")
     print(f"  Hold-out: case {hold_out_id}")
-    for name in ["catheter_pull", "posterior_cut", "vas_cut",
-                 "apical_cut", "endobag"]:
+    for name in EVENT_REPORT_ORDER:
         if name in gt:
             s, e = gt[name]
             print(f"    GT {name:<14}: {s:.0f}s-{e:.0f}s  ({s/60:.1f}-{e/60:.1f} min)")
@@ -575,10 +602,9 @@ def run_case(hold_out_id, cases_dict, all_gt, sam2_model, args, device):
     # Per-event error reporting
     print(f"\n  Predictions:")
     per_event = {}
-    for cls in EVENT_CLASSES:
-        name = EVENT_NAMES[cls]
+    for name in EVENT_REPORT_ORDER:
         gt_w = gt.get(name)
-        pr_w = pred_windows[cls]
+        pr_w = pred_windows.get(name)
         if pr_w is None:
             print(f"    {name:<14}: SKIPPED by decoder")
             per_event[name] = {"gt": gt_w, "pred": None,
@@ -618,8 +644,7 @@ def print_summary(results, out_dir):
     lines.append(f"  {'Event':<16} {'median':>9} {'mean':>9} {'max':>9}  "
                  f"{'<3min':>8}  {'skipped':>8}")
     lines.append(f"  {'-'*16} {'-'*9} {'-'*9} {'-'*9}  {'-'*8}  {'-'*8}")
-    for name in ["catheter_pull", "posterior_cut", "vas_cut",
-                 "apical_cut", "endobag"]:
+    for name in EVENT_REPORT_ORDER:
         errs    = [r["per_event"][name]["err_s"] for r in results
                    if r["per_event"][name]["err_s"] is not None]
         skipped = sum(1 for r in results if r["per_event"][name]["pred"] is None)
@@ -634,15 +659,17 @@ def print_summary(results, out_dir):
         lines.append(f"  {name:<16} {median:>9.0f} {mean:>9.0f} {mx:>9.0f}  "
                      f"{within:>4}/{len(errs):<3} {skipped:>8}")
     lines.append(f"\n  Per-case breakdown:")
+    short = {"catheter_pull": "cath", "posterior_cut": "post",
+             "vas_cut":       "vas",
+             "apical_cut":    "apic", "endobag":       "endo"}
     for r in results:
         parts = []
-        for name in ["catheter_pull", "posterior_cut", "vas_cut",
-                     "apical_cut", "endobag"]:
+        for name in EVENT_REPORT_ORDER:
             e = r["per_event"][name]["err_s"]
             if e is None:
-                parts.append(f"{name[:4]}=skip")
+                parts.append(f"{short[name]}=skip")
             else:
-                parts.append(f"{name[:4]}={e:+.0f}s")
+                parts.append(f"{short[name]}={e:+.0f}s")
         lines.append(f"    case {r['case_id']:<6}  " + "  ".join(parts))
     lines.append(f"{'='*78}")
     text = "\n".join(lines)

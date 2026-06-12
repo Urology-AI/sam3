@@ -414,6 +414,56 @@ The current `build_sample_plan` in `extract_endobag_features.py` draws negatives
 
 This complements the "pick latest segment above threshold" mitigation noted above for endobag: that heuristic exploits a temporal prior in post-processing, while hard-negative mining tightens the probability trace itself.
 
+### Multi-class phase localiser (v2 pipeline)
+
+Rather than running a separate binary classifier per event, the v2 pipeline sweeps the SAM2 encoder once per video and jointly localises all 5 surgical milestones with a single 11-class softmax + Viterbi state machine.
+
+**11 emission classes** (6 events + 5 interphases, chronological):
+`pre_catheter_pull → catheter_pull → post_catheter_pull → posterior_cut → post_posterior_cut → vas_cut → post_vas_cut → apical_cut → post_apical_cut → endobag → post_endobag`
+
+`vas_cut_1` and `vas_cut_2` CSV rows are both mapped to the single `vas_cut` class — left vs right is not visually distinguishable from FPN features, and keeping them separate would cause the softmax to fight itself. The gap between the two cuts gets the `post_vas_cut` interphase label.
+
+**Viterbi state machine:** 11 states (1:1 to classes), stay + advance-by-1 transitions, plus 2 skip edges: `catheter_pull → posterior_cut` (1→3) and `apical_cut → endobag` (7→9). No vas skip edge — vas_cut is a single sustained state.
+
+**v1 classifier (logreg):** `extract_multiclass_features.py` → `train_multiclass_classifier.py` → `localize_multiclass.py`. Sklearn `LogisticRegression` with `class_weight="balanced"`, per-frame `sample_weight` (hard-negative 5×, safety-gap zeroed), LOCO-CV. Orchestrator: `run_multiclass_localization.sh`.
+
+**v2 classifier (PyTorch BiGRU):** `extract_multiclass_features_v2.py` → `train_multiclass_v2.py` → `validate_multiclass_v2.py`. Replaces logreg with `AttnPoolBiGRU` (attention pool over FPN spatial map → 320-d → BiGRU(128 hidden) → 11-class softmax) to handle OOD videos. Adds augmentation at extraction time: HUD-panel paste, letterbox/pillarbox bars, gaussian blur, unsharp mask, colour jitter, JPEG quality jitter. Orchestrator: `run_v2_pipeline.sh`.
+
+---
+
+### OOD Generalisation: Sony/gg1 Videos
+
+The multiclass localiser (SAM2 features + LR + Viterbi) performs well on the 15 in-distribution intuitive_videos cases but **collapses completely** on Sony DVD-recorder videos (`gg1_videos_daniel/SUBJ_*`).
+
+**Failure mode:** Emissions are flat across all frames — `post_endobag` dominates everywhere (~0.5 mean probability), target event classes stay <0.05 inside GT windows. Viterbi collapses all 5 events into zero-width windows within the first ~845s of a 158-minute recording.
+
+**Root cause — high-dimensional feature-space gap:**
+
+- Domain classifier (linear, 640-d SAM2 features): train-vs-OOD AUC = **1.0** — for clean features, augmented features, and every FPN scale independently. Mean per-dim shift ~1σ.
+- Augmentation (`extract_multiclass_features_aug.py`) undershoots: |aug shift| = 2.09 vs |true domain shift| = 7.05, cosine similarity = 0.52 → right direction but only ~30% of the required magnitude.
+- Gap spans at least **7 linear directions** — projecting them all out still leaves domain AUC 0.95. Per-case z-score normalisation (CORAL-lite) does not recover event signal — the gap is nonlinear and high-dimensional, not a per-channel affine shift.
+
+**Four fixes tested — all failed:**
+
+| Fix | Result |
+|---|---|
+| Crop to surgical bbox (remove HUD and black bars) | Removed spurious off-window spikes but created no in-window event signal |
+| + Histogram-match Sony → intuitive (global per-channel LUT) | Made traces *flatter* (max p: 0.075 → 0.0001). Photometric normalisation exhausted. |
+| Per-case feature z-score normalisation (classifier-side) | Still fails — gap is not a per-dim affine shift |
+| DINOv2 ViT-B/14 (invariance-trained backbone, `domain_auc_gate.py`) | Tissue-only AUC = **0.989**, surgical-bbox AUC = **1.000** — an invariance-trained backbone does not bridge the gap |
+
+An in-distribution control (case 213 catheter_pull, in training set) showed probe ratio ~3000× (p_in 0.58 vs p_out 0.0002) — confirming the pipeline machinery is sound and the Sony flatline is a genuine domain gap, not a code bug.
+
+**Verdict:** The cross-recorder gap is intrinsic and high-dimensional in every encoder tried (SAM2 raw, per-case-normalised SAM2, DINOv2). No pixel normalisation, classifier fix, or backbone swap works zero-shot. The logistic regression's linearity was never the bottleneck — it made the gap *legible*. The v2 PyTorch BiGRU classifier (`train_multiclass_v2.py`) addresses the classifier capacity side, but the feature-space shift is the binding constraint.
+
+**Remaining levers — both require domain-aware adaptation:**
+1. **(Recommended)** Annotate 1–2 Sony cases → mixed-domain training. Highest confidence fix.
+2. Unsupervised domain alignment (adversarial / CORAL) using the 18 unlabelled Sony recordings, but still needs at least some labelled Sony cases to validate.
+
+Probe outputs: `multiclass_smoking_gun/probe/`. Aug localisation results: `multiclass_localization_aug/`. Key scripts: `probe_crop_spike.py`, `domain_auc_gate.py`, `test_dv5_hypothesis.py`, `test_crop_hypothesis.py`.
+
+---
+
 ### Scripts
 
 | Script | Purpose |
